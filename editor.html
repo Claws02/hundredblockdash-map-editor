@@ -1,9 +1,9 @@
-<title>City Circuit Map Editor</title>
+<title>HBD Map Editor</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Nunito:wght@400;700;800&display=swap">
 <style>
-/* A tool for placing the game's buildings; one deliberate dark look, the
-   game's own purple and gold. */
+/* A tool for placing the game's scenery on its two boards; one deliberate
+   dark look, the game's own purple and gold. */
 :root {
   color-scheme: dark;
   --ground: #120a22; --chrome: #1d1133; --panel: #251542; --raise: #30204f; --line: #3d2b63;
@@ -134,11 +134,17 @@ kbd { font: 800 11px 'Nunito', sans-serif; border: 1px solid var(--line); border
 @media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
 </style>
 
-<div id="loading"><div>Loading the city…</div></div>
+<div id="loading"><div>Loading the map…</div></div>
 <div id="app">
   <header id="bar">
     <button class="btn" id="b-lib" aria-pressed="true" title="Show or hide the model library">Library</button>
-    <div class="brand">City Circuit <em>Map Editor</em></div>
+    <div class="brand"><em>Map Editor</em></div>
+    <div class="seg" role="group" aria-label="Map">
+      <button type="button" id="map-city" aria-pressed="false" title="City Circuit">City</button><button type="button" id="map-hbd" aria-pressed="false" title="Hundred Block Dash">Block Dash</button>
+    </div>
+    <div class="seg" role="group" aria-label="Run length" id="lenseg" hidden title="Which run's scenery you are placing: the realms split the path by length">
+      <button type="button" data-len="50" aria-pressed="false">50</button><button type="button" data-len="75" aria-pressed="false">75</button><button type="button" data-len="100" aria-pressed="false">100</button>
+    </div>
     <div class="seg" role="group" aria-label="View">
       <button type="button" id="v-plan" aria-pressed="true">Plan</button><button type="button" id="v-3d" aria-pressed="false">3D</button>
     </div>
@@ -165,15 +171,15 @@ kbd { font: 800 11px 'Nunito', sans-serif; border: 1px solid var(--line); border
   </aside>
 
   <main id="stage">
-    <canvas id="view" aria-label="The city, seen from above"></canvas>
+    <canvas id="view" aria-label="The board, seen from above"></canvas>
     <div class="floating" id="tools">
-      <button class="btn" id="b-fit" title="Show the whole city">Whole city</button>
+      <button class="btn" id="b-fit" title="Show the whole map">Whole map</button>
       <button class="btn" id="b-turn" title="Turn the plan view a quarter">Turn view</button>
     </div>
     <div class="floating" id="legend">
       <span><i class="sw" style="background:var(--gold)"></i>Selected</span>
       <span><i class="sw" style="background:var(--bad)"></i>Overlap or in the way</span>
-      <span><i class="sw" style="background:rgba(255,90,110,.45)"></i>Keep-out: spaces and road</span>
+      <span><i class="sw" style="background:rgba(255,90,110,.45)"></i><span id="legend-keep">Keep-out: spaces and road</span></span>
     </div>
     <div class="floating" id="inspector" hidden>
       <div class="ins-head"><h3 id="i-name">Model</h3><span class="ds" id="i-ds"></span>
@@ -221,7 +227,7 @@ kbd { font: 800 11px 'Nunito', sans-serif; border: 1px solid var(--line); border
   <div class="sheet">
     <h2 id="m-save-h">Save for Claude</h2>
     <p id="m-save-p">Claude reads the saved layout from here and puts it in the game. A note about what you changed helps.</p>
-    <textarea id="m-note" placeholder="For example: moved the Back Alley walk-ups off the spaces and turned the Exchange to face the ring"></textarea>
+    <textarea id="m-note"></textarea>
     <div class="acts"><button class="btn" data-close>Cancel</button><button class="btn primary" id="m-save-go">Save</button></div>
   </div>
 </div>
@@ -256,6 +262,7 @@ kbd { font: 800 11px 'Nunito', sans-serif; border: 1px solid var(--line); border
       <b>Change it</b><span>Variant, HQ, size and exact position are in the panel at the bottom.</span>
       <b>Red</b><span>The piece overlaps another, or stands on a space or the road. Overhead spans are meant to cross the road.</span>
       <b>Spaces</b><span>Drag a space (the coloured hexagons) to move it; its district's road follows. Put back returns it to where the map puts it. What each space is (coin, duel…) is still dealt by the game.</span>
+      <b>Hundred Block Dash</b><span>Switch maps at the top. Drag the path points (the hexagons along the path) to reshape the path; the blocks and realm ground follow. The realms split the path by run length, so 50, 75 and 100 each have their own scenery: pick the length you are placing for.</span>
       <b>Look</b><span>Each district's sky, haze, pavement, slabs, light and particles. Changes show on the board (the sky and particles in the panel's preview).</span>
       <b>Layers</b><span>Hide kinds of pieces (props, overheads…) while you arrange the rest.</span>
       <b>Save</b><span><i>Save for Claude</i> stores the layout where Claude can read it. Your work is also kept on this device between saves.</span>
@@ -270,19 +277,29 @@ kbd { font: 800 11px 'Nunito', sans-serif; border: 1px solid var(--line); border
 // ================= the game's own model code (src/engine/CityKit.js) =================
 /*@@CITYKIT@@*/
 // ================= editor =================
-const REF = /*@@REF@@*/null;
-const GAME_LAYOUT = /*@@LAYOUT@@*/null;
+const REFS = /*@@REF@@*/null;             // map → the board underneath (ref/<map>.json)
+const GAME_LAYOUTS = /*@@LAYOUT@@*/null;  // map → the layout the game uses now
 const BUILD_INFO = /*@@BUILD@@*/null;
-const GROUND_URL = "@@GROUND@@";
+const GROUND_URL = "@@GROUND@@";          // City Circuit's floor
+const MAP_NAMES = { city_circuit: 'City Circuit', hundred_block_dash: 'Hundred Block Dash' };
+const RUN_LENGTHS = ['50', '75', '100'];
 
-async function main() {
-  const MAP = REF.map;
+// One map at a time: switching maps stops this one (its listeners, its
+// canvas and GL context) and starts the other from its own saved state.
+async function main(MAP) {
+  const HBD = MAP === 'hundred_block_dash';
+  const REF = REFS[MAP], GAME_LAYOUT = GAME_LAYOUTS[MAP];
+  const MAP_NAME = MAP_NAMES[MAP];
+  const KIT = HBD ? 'hbd' : 'city';       // CityKit MODELS carry map: 'hbd' for Hundred Block Dash's
   const DOC = 'layouts/' + MAP;
   const DRAFT_KEY = 'hbd-map-editor-draft-' + MAP;
-  const SPACE_R = REF.spaceR + 1.0;       // a building must stay this far from a space's centre
-  const ROAD_HALF = 3.0;                  // ...and this far from a road's centre line
-  const REACH = REF.half;                 // the board's edge (scripts/apply-layout.js refuses past it)
+  const SPACE_R = HBD ? 0 : REF.spaceR + 1.0;   // a building must stay this far from a space's centre
+  const ROAD_HALF = HBD ? 3.5 : 3.0;            // ...and this far from a road's (or the path's) centre line
+  const REACH = HBD ? 490 : REF.half;           // the board's edge (scripts/apply-layout.js refuses past it)
+  const HANDLE_R = HBD ? 1.8 : REF.spaceR;      // the pickable hexagon: a space, or a path point
   const $ = id => document.getElementById(id);
+  const ac = new AbortController();
+  const on = (t, ev, fn, o) => t.addEventListener(ev, fn, { ...(o || {}), signal: ac.signal });
 
   // ---------- state ----------
   let items = [];                  // { uid, model, seed, hq, x, z, rotY, scale }
@@ -293,9 +310,10 @@ async function main() {
   const undoStack = [], redoStack = [];
   let saved = { savedAt: GAME_LAYOUT?.savedAt || null, json: '' };
   let db = null, downloads = null;
-  const CATS = [['building', 'Buildings'], ['landmark', 'Landmarks'], ['prop', 'Street props'], ['span', 'Overheads'], ['furniture', 'Furniture']];
+  const CATS = HBD ? [['landmark', 'Landmarks'], ['decor', 'Scenery'], ['scatter', 'Ground scatter']]
+                   : [['building', 'Buildings'], ['landmark', 'Landmarks'], ['prop', 'Street props'], ['span', 'Overheads'], ['furniture', 'Furniture']];
   const catOf = model => (MODELS[model] || {}).cat || 'building';
-  const isStreet = model => ['prop', 'span', 'furniture'].includes(catOf(model));
+  const isStreet = model => !HBD && ['prop', 'span', 'furniture'].includes(catOf(model));
   const hiddenCats = new Set();
   const strip = list => list.map(({ model, seed, hq, x, z, rotY, scale }) => ({ model, seed, hq: !!hq, x: r3(x), z: r3(z), rotY: r3(rotY), scale: r3(scale) }));
   function r3(n) { return Math.round(n * 1000) / 1000; }
@@ -303,7 +321,7 @@ async function main() {
   const itemBy = uid => items.find(i => i.uid === uid);
 
   // ---------- three ----------
-  const canvas = $('view');
+  const canvas = $('view').cloneNode(false); $('view').replaceWith(canvas);   // a fresh one: no old listeners or GL context
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.shadowMap.enabled = true;
@@ -312,26 +330,44 @@ async function main() {
   scene.background = new THREE.Color(0x120a22);
   scene.add(new THREE.HemisphereLight(0xe6ecff, 0x3a3550, 0.95));
   const sun = new THREE.DirectionalLight(0xfff4e0, 0.95);
-  sun.position.set(60, 90, 40); sun.castShadow = true;
-  Object.assign(sun.shadow.camera, { left: -150, right: 150, top: 150, bottom: -150, near: 10, far: 300 });
+  // Where the map is: City Circuit sits on the origin; Hundred Block Dash's
+  // path runs off north from it.
+  const HOME = (() => {
+    if (!HBD) return { cx: 0, cz: 0, half: 95, span: 150 };
+    const xs = REF.waypoints.map(p => p[0]), zs = REF.waypoints.map(p => p[1]);
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cz = (Math.min(...zs) + Math.max(...zs)) / 2;
+    const half = (Math.max(...zs) - Math.min(...zs)) / 2 + 45;
+    return { cx, cz, half, span: half + 40 };
+  })();
+  sun.position.set(HOME.cx + 60, 90, HOME.cz + 40); sun.castShadow = true;
+  sun.target.position.set(HOME.cx, 0, HOME.cz); scene.add(sun.target);
+  Object.assign(sun.shadow.camera, { left: -HOME.span, right: HOME.span, top: HOME.span, bottom: -HOME.span, near: 10, far: 300 });
   sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0006;
   scene.add(sun);
 
-  // The floor: the game's own ground, rendered straight down (qa/exportlayout.js).
-  const groundTex = new THREE.TextureLoader().load(GROUND_URL, () => requestRender());
-  groundTex.anisotropy = 4;
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(REACH * 2, REACH * 2), new THREE.MeshBasicMaterial({ map: groundTex }));
-  ground.rotation.x = -Math.PI / 2; ground.position.y = -0.03; scene.add(ground);
-  const shadowCatcher = new THREE.Mesh(new THREE.PlaneGeometry(REACH * 2, REACH * 2), new THREE.ShadowMaterial({ opacity: 0.28 }));
-  shadowCatcher.rotation.x = -Math.PI / 2; shadowCatcher.position.y = -0.02; shadowCatcher.receiveShadow = true; scene.add(shadowCatcher);
+  // The floor. City Circuit: the game's own ground, rendered straight down
+  // (scripts/export-reference.js). Hundred Block Dash: the game's dark base;
+  // its realm ground follows the path, so the board below draws it.
+  const floorSize = HBD ? HOME.span * 2 + 160 : REACH * 2;
+  const floorMat = HBD ? new THREE.MeshBasicMaterial({ color: 0x05060f })
+                       : new THREE.MeshBasicMaterial({ map: new THREE.TextureLoader().load(GROUND_URL, () => requestRender()) });
+  if (floorMat.map) floorMat.map.anisotropy = 4;
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(floorSize, floorSize), floorMat);
+  ground.rotation.x = -Math.PI / 2; ground.position.set(HBD ? HOME.cx : 0, -0.03, HBD ? HOME.cz : 0); scene.add(ground);
+  const shadowCatcher = new THREE.Mesh(new THREE.PlaneGeometry(floorSize, floorSize), new THREE.ShadowMaterial({ opacity: 0.28 }));
+  shadowCatcher.rotation.x = -Math.PI / 2; shadowCatcher.position.set(ground.position.x, -0.02, ground.position.z); shadowCatcher.receiveShadow = true; scene.add(shadowCatcher);
 
   // ---------- the board: spaces, district pavements, guide path, keep-outs ----------
   // Everything here follows the spaces, so it is drawn from their current
   // positions rather than baked into the floor image. A district with no
   // moved space draws the game's own lobe; one with moved spaces draws
   // CityKit.roadCurve through them, which is what the game lays too.
-  const ORIG = new Map(REF.nodes.map(n => [n.id, n]));
-  const SPACE_IDS = REF.nodes.filter(n => !n.junction).map(n => n.id);
+  // On Hundred Block Dash the handles are the path's waypoints (p0, p1, …),
+  // and moving them is what reshapes the board.
+  const ORIG = HBD ? new Map(REF.waypoints.map(([x, z], i) => ['p' + i, { id: 'p' + i, x, z }]))
+                   : new Map(REF.nodes.map(n => [n.id, n]));
+  const SPACE_IDS = HBD ? [...ORIG.keys()] : REF.nodes.filter(n => !n.junction).map(n => n.id);
+  let runLen = '100';                               // Hundred Block Dash: the run whose scenery is being placed
   let moved = {};                                   // id → [x, z]
   const nodePos = id => { const m = moved[id], o = ORIG.get(id); return m ? { x: m[0], z: m[1] } : { x: o.x, z: o.z }; };
   const movedClean = () => {
@@ -342,7 +378,8 @@ async function main() {
     }
     return out;
   };
-  const DIST_COL = {}; REF.runs.forEach(r => { DIST_COL[r.district] = r.color; });
+  const DIST_COL = {}; (REF.runs || []).forEach(r => { DIST_COL[r.district] = r.color; });
+  if (HBD) DIST_COL.path = '#c7d2fe';
   const board = new THREE.Group(); scene.add(board);
   const keep = new THREE.Group(); scene.add(keep);
   const keepMat = new THREE.MeshBasicMaterial({ color: 0xff5a6e, transparent: true, opacity: 0.32, depthWrite: false });
@@ -381,6 +418,7 @@ async function main() {
   function rebuildBoard() {
     for (const grp of [board, keep]) while (grp.children.length) { const c = grp.children.pop(); c.geometry && c.geometry.dispose(); }
     spaceMarks.clear();
+    if (HBD) { rebuildPath(); return; }
     const xz = id => { const p = nodePos(id); return [p.x, p.z]; };
     // District pavements.
     REF.runs.forEach(run => {
@@ -430,9 +468,74 @@ async function main() {
     });
     applySpaceLayer(); paintSpaces(); applyLooks();
   }
+  // Hundred Block Dash, as the game lays it (Renderer buildHBDPositions and
+  // _buildHBDScene): a Catmull-Rom curve through the waypoints, the run's
+  // blocks evenly along it, and each realm's ground ribbon padded one block
+  // into its neighbours.
+  let hbdMats = null;
+  function rebuildPath() {
+    if (!hbdMats) {
+      hbdMats = { realm: {}, block: {}, guide: new THREE.MeshBasicMaterial({ color: 0x6366f1, transparent: true, opacity: 0.55, depthWrite: false }),
+                  hull: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.22, depthWrite: false }) };
+      for (const [k, st] of Object.entries(REF.style)) {
+        hbdMats.realm[k] = new THREE.MeshBasicMaterial({ color: new THREE.Color(st.ground).lerp(new THREE.Color(st.ground2), 0.3), side: THREE.DoubleSide });
+        hbdMats.block[k] = new THREE.MeshBasicMaterial({ color: st.accent, depthTest: false });
+      }
+    }
+    const wps = SPACE_IDS.map(id => { const p = nodePos(id); return new THREE.Vector3(p.x, 0, p.z); });
+    const curve = new THREE.CatmullRomCurve3(wps);
+    const realms = REF.lengths[runLen], max = realms.length - 1;
+    const blocks = curve.getSpacedPoints(max);
+    const normal = t => { const tan = curve.getTangent(Math.max(0.001, Math.min(t, 0.999))).setY(0).normalize(); return { x: -tan.z, z: tan.x }; };
+    // Realm ground.
+    const groups = {}; realms.forEach((k, i) => (groups[k] || (groups[k] = [])).push(i));
+    Object.entries(groups).forEach(([k, idxs], order) => {
+      const ext = [idxs[0] - 1, ...idxs, idxs[idxs.length - 1] + 1].filter(i => i >= 0 && i <= max);
+      const pos = [], idx = [];
+      ext.forEach((bi, j) => {
+        const p = blocks[bi], n = normal(bi / max), h = REF.ribbonHalf;
+        pos.push(p.x + n.x * h, order * 0.002, p.z + n.z * h, p.x - n.x * h, order * 0.002, p.z - n.z * h);
+        if (j > 0) { const a = (j - 1) * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+      });
+      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx);
+      const m = new THREE.Mesh(g, hbdMats.realm[k] || hbdMats.realm.woods); m.renderOrder = -2; board.add(m);
+    });
+    // The walking path and its keep-out corridor.
+    const samples = curve.getSpacedPoints(Math.max(60, Math.round(curve.getLength() / 0.8))).map(v => ({ x: v.x, z: v.z }));
+    board.add(Object.assign(new THREE.Mesh(ribbonGeo(samples, 3, 0.02), hbdMats.guide), { renderOrder: -1 }));
+    keep.add(new THREE.Mesh(ribbonGeo(samples, ROAD_HALF * 2, 0.03), roadMat));
+    roadPts = samples;
+    // The blocks, in their realm's colour.
+    blocks.forEach((p, i) => {
+      const d = new THREE.Mesh(new THREE.CircleGeometry(i === max ? 1.6 : 0.9, 12).rotateX(-Math.PI / 2), hbdMats.block[realms[i]] || hbdMats.block.woods);
+      d.position.set(p.x, 0.06, p.z); d.renderOrder = 4; board.add(d);
+    });
+    // The waypoints: the line through them, and a hexagon to drag.
+    board.add(new THREE.Mesh(ribbonGeo(wps.map(v => ({ x: v.x, z: v.z })), 0.35, 0.04), hbdMats.hull));
+    SPACE_IDS.forEach(id => {
+      const p = nodePos(id);
+      const rim = new THREE.Mesh(new THREE.CircleGeometry(HANDLE_R + 0.45, 6).rotateX(-Math.PI / 2), rimMat);
+      rim.position.set(p.x, 0.1, p.z); rim.renderOrder = 6; board.add(rim);
+      const mk = new THREE.Mesh(new THREE.CircleGeometry(HANDLE_R, 6).rotateX(-Math.PI / 2), markerMat('path', 'ok'));
+      mk.position.set(p.x, 0.11, p.z); mk.renderOrder = 7; mk.userData.spaceId = id; board.add(mk);
+      spaceMarks.set(id, mk);
+    });
+    applySpaceLayer(); paintSpaces();
+  }
   function applySpaceLayer() { spaceMarks.forEach(m => { m.visible = !hiddenCats.has('space'); }); }
   function checkSpaces() {
     spaceBad = new Map();
+    if (HBD) {
+      // scripts/apply-layout.js refuses waypoints within 4 units of the one before.
+      for (let i = 1; i < SPACE_IDS.length; i++) {
+        const a = nodePos(SPACE_IDS[i - 1]), b = nodePos(SPACE_IDS[i]);
+        if (Math.hypot(a.x - b.x, a.z - b.z) < 4) {
+          spaceBad.set(SPACE_IDS[i], ['is on top of path point ' + (i - 1)]);
+          if (!spaceBad.has(SPACE_IDS[i - 1])) spaceBad.set(SPACE_IDS[i - 1], ['is on top of path point ' + i]);
+        }
+      }
+      return;
+    }
     const min = REF.spaceR * 2 + 0.6;
     for (let i = 0; i < SPACE_IDS.length; i++) for (let j = i + 1; j < SPACE_IDS.length; j++) {
       const a = nodePos(SPACE_IDS[i]), b = nodePos(SPACE_IDS[j]);
@@ -443,7 +546,7 @@ async function main() {
     }
   }
   function paintSpaces() {
-    spaceMarks.forEach((m, id) => { m.material = markerMat(ORIG.get(id).district, id === selSpace ? 'sel' : spaceBad.has(id) ? 'bad' : 'ok'); });
+    spaceMarks.forEach((m, id) => { m.material = markerMat(HBD ? 'path' : ORIG.get(id).district, id === selSpace ? 'sel' : spaceBad.has(id) ? 'bad' : 'ok'); });
   }
   // ---------- district looks ----------
   // REF.looks is each district as the game draws it by default; `looks`
@@ -497,22 +600,22 @@ async function main() {
   function liveBoard() { if (boardQueued) return; boardQueued = true; requestAnimationFrame(() => { boardQueued = false; rebuildBoard(); checkConflicts(); }); }
 
   // ---------- cameras ----------
-  const plan = { cx: 0, cz: 0, half: 95, ang: 0 };
-  const orbit = { tx: 0, tz: 0, yaw: 0.7, pitch: 0.72, dist: 150 };
+  const plan = { cx: HOME.cx, cz: HOME.cz, half: HOME.half, ang: 0 };
+  const orbit = { tx: HOME.cx, tz: HOME.cz, yaw: 0.7, pitch: 0.72, dist: HBD ? 260 : 150 };
   const ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 1200);
   const persp = new THREE.PerspectiveCamera(45, 1, 0.5, 2000);
   let cam = ortho;
   function aspect() { return Math.max(0.2, canvas.clientWidth / Math.max(1, canvas.clientHeight)); }
   function updateCams() {
     const a = aspect();
-    plan.half = Math.max(10, Math.min(170, plan.half));
+    plan.half = Math.max(10, Math.min(HBD ? 300 : 170, plan.half));
     Object.assign(ortho, { left: -plan.half * a, right: plan.half * a, top: plan.half, bottom: -plan.half });
     ortho.position.set(plan.cx, 500, plan.cz);
     ortho.up.set(Math.sin(plan.ang), 0, -Math.cos(plan.ang));
     ortho.lookAt(plan.cx, 0, plan.cz);
     ortho.updateProjectionMatrix();
     orbit.pitch = Math.max(0.12, Math.min(1.5, orbit.pitch));
-    orbit.dist = Math.max(15, Math.min(340, orbit.dist));
+    orbit.dist = Math.max(15, Math.min(HBD ? 640 : 340, orbit.dist));
     const cp = Math.cos(orbit.pitch);
     persp.aspect = a;
     persp.position.set(orbit.tx + orbit.dist * cp * Math.sin(orbit.yaw), orbit.dist * Math.sin(orbit.pitch), orbit.tz + orbit.dist * cp * Math.cos(orbit.yaw));
@@ -526,13 +629,13 @@ async function main() {
     renderer.setSize(w, h, false);
     updateCams();
   }
-  new ResizeObserver(resize).observe($('stage'));
+  const ro = new ResizeObserver(resize); ro.observe($('stage'));
 
   let pending = false;
   function requestRender() {
     if (pending) return;
     pending = true;
-    requestAnimationFrame(() => { pending = false; renderer.render(scene, cam); });
+    requestAnimationFrame(() => { pending = false; if (!ac.signal.aborted) renderer.render(scene, cam); });
   }
 
   // ---------- models on the board ----------
@@ -671,12 +774,17 @@ async function main() {
       // clashes with a building or landmark, never with the props under it.
       const ca = catOf(A.it.model), cb = catOf(B.it.model), solid = c => c === 'building' || c === 'landmark';
       if ((ca === 'span' && !solid(cb)) || (cb === 'span' && !solid(ca))) continue;
+      // Hundred Block Dash's scenery grows in clumps: only a landmark
+      // crowding something counts there.
+      if (HBD && ca !== 'landmark' && cb !== 'landmark') continue;
       if (overlapRects(A.c, B.c)) { A.list.push('overlaps ' + MODELS[B.it.model].name); B.list.push('overlaps ' + MODELS[A.it.model].name); }
     }
     for (const A of info) {
       if (!MODELS[A.it.model].spansRoad) {
-      if (SPACE_IDS.some(id => { const s = nodePos(id); return Math.hypot(s.x - A.it.x, s.z - A.it.z) < A.R + SPACE_R && circleHits(A.it, s.x, s.z, SPACE_R); })) A.list.push('stands on a space');
-      if (roadPts.some(p => Math.hypot(p.x - A.it.x, p.z - A.it.z) < A.R + ROAD_HALF && circleHits(A.it, p.x, p.z, ROAD_HALF))) A.list.push('stands on the road');
+      if (!HBD && SPACE_IDS.some(id => { const s = nodePos(id); return Math.hypot(s.x - A.it.x, s.z - A.it.z) < A.R + SPACE_R && circleHits(A.it, s.x, s.z, SPACE_R); })) A.list.push('stands on a space');
+      // Ground scatter is ankle-high: it only has to keep off the tiles (1.6 across the middle).
+      const half = HBD && catOf(A.it.model) === 'scatter' ? 2.2 : ROAD_HALF;
+      if (roadPts.some(p => Math.hypot(p.x - A.it.x, p.z - A.it.z) < A.R + half && circleHits(A.it, p.x, p.z, half))) A.list.push(HBD ? 'stands on the path' : 'stands on the road');
       }
       if (Math.hypot(A.it.x, A.it.z) > REACH - 2) A.list.push('is off the edge of the board');
       const o = objs.get(A.it.uid); o.conflicts = [...new Set(A.list)];
@@ -705,8 +813,29 @@ async function main() {
   }
 
   // ---------- history, draft, dirty ----------
-  function snapshot() { return JSON.stringify({ items: strip(items), spaces: movedClean(), looks: looksClean() }); }
-  function restore(str) { const st = JSON.parse(str); moved = { ...(st.spaces || {}) }; looks = JSON.parse(JSON.stringify(st.looks || {})); loadItems(st.items || []); renderLook(); }
+  // A map's whole editable state, in one canonical shape (undo steps, the
+  // draft, and the "unsaved changes" test all compare it). City Circuit:
+  // items, moved spaces, looks. Hundred Block Dash: every run length's
+  // scenery, and the moved waypoints.
+  let runs = {};                                    // Hundred Block Dash: length → items, for the lengths not on the board
+  const allRuns = () => Object.fromEntries(RUN_LENGTHS.map(n => [n, n === runLen ? strip(items) : (runs[n] || [])]));
+  function state() { return HBD ? { runs: allRuns(), spaces: movedClean() } : { items: strip(items), spaces: movedClean(), looks: looksClean() }; }
+  function snapshot() { return JSON.stringify(state()); }
+  // A saved layout (or the game's) as that canonical state.
+  function stateOf(doc) {
+    if (!HBD) return { items: strip(doc.items || []), spaces: doc.spaces || {}, looks: doc.looks || {} };
+    const spaces = {};
+    if (Array.isArray(doc.path)) doc.path.forEach((xz, i) => { const o = ORIG.get('p' + i); if (o && Math.hypot(xz[0] - o.x, xz[1] - o.z) > 1e-3) spaces['p' + i] = [r3(xz[0]), r3(xz[1])]; });
+    // A length a layout leaves out is the game's scenery, never an empty run.
+    const out = {}; RUN_LENGTHS.forEach(n => { out[n] = strip((doc.runs && doc.runs[n]) || (GAME_LAYOUT.runs && GAME_LAYOUT.runs[n]) || []); });
+    return { runs: out, spaces };
+  }
+  function restoreState(st) {
+    moved = { ...(st.spaces || {}) };
+    if (HBD) { runs = JSON.parse(JSON.stringify(st.runs || {})); loadItems(runs[runLen] || []); return; }
+    looks = JSON.parse(JSON.stringify(st.looks || {})); loadItems(st.items || []); renderLook();
+  }
+  function restore(str) { restoreState(JSON.parse(str)); }
   function checkpoint() { undoStack.push(snapshot()); if (undoStack.length > 120) undoStack.shift(); redoStack.length = 0; syncButtons(); }
   function loadItems(list, keepSel) {
     items = withUids(list);
@@ -721,9 +850,11 @@ async function main() {
   function changed() {
     syncButtons(); updateStatus();
     clearTimeout(draftTimer);
-    draftTimer = setTimeout(() => {
-      try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ basedOn: saved.savedAt, items: strip(items), spaces: movedClean(), looks: looksClean(), at: Date.now() })); } catch (e) {}
-    }, 400);
+    draftTimer = setTimeout(writeDraft, 400);
+  }
+  function writeDraft() {
+    clearTimeout(draftTimer);
+    try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ basedOn: saved.savedAt, ...state(), at: Date.now() })); } catch (e) {}
   }
   function updateStatus(text) {
     const s = $('status');
@@ -731,6 +862,15 @@ async function main() {
     const dirty = snapshot() !== saved.json;
     s.classList.toggle('dirty', dirty);
     s.textContent = dirty ? 'Unsaved changes' : (saved.savedAt ? 'Saved ' + when(saved.savedAt) : 'Matches the game');
+    // Which run lengths differ from what was last saved (Hundred Block Dash).
+    if (HBD) {
+      let was = {}; try { was = JSON.parse(saved.json).runs || {}; } catch (e) {}
+      const now = allRuns();
+      document.querySelectorAll('#lenseg [data-len]').forEach(b => {
+        const n = b.dataset.len, d = JSON.stringify(now[n]) !== JSON.stringify(was[n] || []);
+        b.textContent = n + (d ? ' •' : '');
+      });
+    }
   }
   function when(iso) {
     const d = new Date(iso); if (isNaN(d)) return '';
@@ -752,8 +892,9 @@ async function main() {
     if (sp) {
       const p = nodePos(sp), d = ORIG.get(sp).district;
       $('inspector').hidden = false; knob.visible = stem.visible = false;
-      $('i-name').textContent = 'Space ' + sp;
-      $('i-ds').textContent = ((REF.runs.find(r => r.district === d) ? d : 'ring') === REF.hub ? 'Ring Road' : ({ fin: 'Financial District', ba: 'Back Alley', shop: 'Shopping Promenade', ind: 'Industrial Zone' }[d] || d)) + ' · space';
+      $('i-name').textContent = HBD ? 'Path point ' + sp.slice(1) : 'Space ' + sp;
+      $('i-ds').textContent = HBD ? 'Hundred Block Dash · every run length' :
+        ((REF.runs.find(r => r.district === d) ? d : 'ring') === REF.hub ? 'Ring Road' : ({ fin: 'Financial District', ba: 'Back Alley', shop: 'Shopping Promenade', ind: 'Industrial Zone' }[d] || d)) + ' · space';
       if (document.activeElement !== $('i-x')) $('i-x').value = p.x.toFixed(1);
       if (document.activeElement !== $('i-z')) $('i-z').value = p.z.toFixed(1);
       $('i-reset').disabled = !moved[sp];
@@ -807,6 +948,7 @@ async function main() {
     }
     edit(it => { it[key] = Math.max(-REACH, Math.min(REACH, v)); });
   };
+  $('i-reset').title = HBD ? 'Put the path point back where the game has it' : 'Put the space back where the map puts it';
   $('i-reset').onclick = () => { if (!selSpace || !moved[selSpace]) return; checkpoint(); delete moved[selSpace]; rebuildBoard(); checkConflicts(); refreshSelection(); changed(); };
   $('i-x').onchange = typed('x'); $('i-z').onchange = typed('z');
   $('i-dup').onclick = duplicate;
@@ -871,7 +1013,7 @@ async function main() {
   function pickSpace(x, y) {
     if (hiddenCats.has('space')) return null;
     const g = groundAt(x, y); if (!g) return null;
-    let best = null, bd = REF.spaceR + 0.8;
+    let best = null, bd = HANDLE_R + 0.8;
     for (const id of SPACE_IDS) { const p = nodePos(id), d = Math.hypot(p.x - g.x, p.z - g.z); if (d < bd) { bd = d; best = id; } }
     return best;
   }
@@ -889,7 +1031,7 @@ async function main() {
   function restoreCam(s) { Object.assign(plan, s.plan); Object.assign(orbit, s.orbit); updateCams(); }
   function pinchInfo() { const [a, b] = [...pointers.values()]; return { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 }; }
 
-  canvas.addEventListener('pointerdown', e => {
+  on(canvas, 'pointerdown', e => {
     canvas.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.size === 1) {
@@ -916,7 +1058,7 @@ async function main() {
       gesture = { type: 'pinch', d0: p.d, cam: camState(), g0: groundAt(p.mx, p.my) };
     }
   });
-  canvas.addEventListener('pointermove', e => {
+  on(canvas, 'pointermove', e => {
     if (!pointers.has(e.pointerId)) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (!gesture) return;
@@ -972,16 +1114,16 @@ async function main() {
     if ((gesture.type === 'pan' || gesture.type === 'orbit') && !gesture.moved) { select(null); selectSpace(null); }   // a tap on empty ground
     if (pointers.size === 0) gesture = null;
   }
-  canvas.addEventListener('pointerup', endPointer);
-  canvas.addEventListener('pointercancel', endPointer);
-  canvas.addEventListener('wheel', e => {
+  on(canvas, 'pointerup', endPointer);
+  on(canvas, 'pointercancel', endPointer);
+  on(canvas, 'wheel', e => {
     e.preventDefault();
     const k = Math.exp(e.deltaY * 0.0012);
     if (mode === 'plan') plan.half *= k; else orbit.dist *= k;
     updateCams();
   }, { passive: false });
-  document.addEventListener('gesturestart', e => e.preventDefault());
-  document.addEventListener('keydown', e => {
+  on(document, 'gesturestart', e => e.preventDefault());
+  on(document, 'keydown', e => {
     if (e.target.closest && e.target.closest('input, textarea')) return;
     const mod = e.metaKey || e.ctrlKey;
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
@@ -1008,7 +1150,23 @@ async function main() {
   $('b-undo').onclick = undo; $('b-redo').onclick = redo;
   $('b-layers').onclick = () => { renderLayers(); openModal('m-layers'); };
   $('b-lib').onclick = () => { const closed = $('app').classList.toggle('lib-closed'); $('b-lib').setAttribute('aria-pressed', String(!closed)); };
-  $('b-fit').onclick = () => { plan.cx = plan.cz = 0; plan.half = 95; orbit.tx = orbit.tz = 0; orbit.dist = 150; updateCams(); };
+  $('b-fit').onclick = () => { plan.cx = orbit.tx = HOME.cx; plan.cz = orbit.tz = HOME.cz; plan.half = HOME.half; orbit.dist = HBD ? 260 : 150; updateCams(); };
+  // The map and, on Hundred Block Dash, the run length being placed.
+  $('map-city').setAttribute('aria-pressed', String(!HBD)); $('map-hbd').setAttribute('aria-pressed', String(HBD));
+  $('map-city').onclick = () => { if (HBD) switchMap('city_circuit'); };
+  $('map-hbd').onclick = () => { if (!HBD) switchMap('hundred_block_dash'); };
+  $('lenseg').hidden = !HBD;
+  $('b-look').style.display = HBD ? 'none' : '';
+  if (HBD) $('lookpanel').hidden = true;
+  $('legend-keep').textContent = HBD ? 'Keep-out: the path' : 'Keep-out: spaces and road';
+  $('m-note').placeholder = HBD ? 'For example: pulled the Ember scenery back from the path on the 100-block run and bent the path round the volcano'
+                                : 'For example: moved the Back Alley walk-ups off the spaces and turned the Exchange to face the ring';
+  function setRunLen(n) {
+    if (!HBD || !RUN_LENGTHS.includes(n)) return;
+    if (n !== runLen) { runs[runLen] = strip(items); runLen = n; loadItems(runs[n] || []); updateStatus(); }
+    document.querySelectorAll('#lenseg [data-len]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.len === runLen)));
+  }
+  document.querySelectorAll('#lenseg [data-len]').forEach(b => { b.onclick = () => { setRunLen(b.dataset.len); toast(`Placing scenery for the ${runLen}-block run.`); }; });
   $('b-turn').onclick = () => { plan.ang = (plan.ang + Math.PI / 2) % (Math.PI * 2); updateCams(); };
 
   // ---------- look panel ----------
@@ -1088,8 +1246,9 @@ async function main() {
   // ---------- library ----------
   const LIB = [];
   const firstSeed = {};
-  (GAME_LAYOUT?.items || []).forEach(it => { if (firstSeed[it.model] === undefined) firstSeed[it.model] = it.seed; });
+  (HBD ? (GAME_LAYOUT?.runs?.['100'] || []) : (GAME_LAYOUT?.items || [])).forEach(it => { if (firstSeed[it.model] === undefined) firstSeed[it.model] = it.seed; });
   Object.entries(MODELS).forEach(([key, M]) => {
+    if ((M.map || 'city') !== KIT) return;
     LIB.push({ model: key, hq: false });
     if (M.hq) LIB.push({ model: key, hq: true });
   });
@@ -1126,7 +1285,7 @@ async function main() {
     const cx = mode === 'plan' ? plan.cx : orbit.tx, cz = mode === 'plan' ? plan.cz : orbit.tz;
     let seed = firstSeed[e.model] ?? 1; if (!okSeed(e.model, seed)) seed = (seed + 1) % 100;
     const it = { uid: uidSeq++, model: e.model, seed, hq: e.hq, x: snapPos(cx), z: snapPos(cz),
-                 rotY: snapAng(Math.atan2(-cx, -cz) || 0), scale: 1 };
+                 rotY: HBD ? 0 : snapAng(Math.atan2(-cx, -cz) || 0), scale: 1 };
     items.push(it); build(it); select(it.uid); checkConflicts(); changed();
     toast(`${MODELS[e.model].name} added. Drag it into place.`);
   }
@@ -1139,6 +1298,7 @@ async function main() {
     const tl = new THREE.DirectionalLight(0xffffff, 0.9); tl.position.set(30, 50, 40); ts.add(tl);
     const tc = new THREE.PerspectiveCamera(30, 1, 0.5, 800);
     for (const e of LIB) {
+      if (ac.signal.aborted) break;
       const key = e.model + (e.hq ? '-hq' : '');
       let seed = firstSeed[e.model] ?? 1; if (!okSeed(e.model, seed)) seed = (seed + 1) % 100;
       const g = buildModel({ model: e.model, seed, hq: e.hq }, { live: () => {} });
@@ -1158,13 +1318,20 @@ async function main() {
 
   // ---------- saving ----------
   function layoutDoc(note) {
+    const head = { map: MAP, version: 2, savedAt: new Date().toISOString(), note: (note || '').slice(0, 300) };
+    const editor = BUILD_INFO ? BUILD_INFO.commit : '';
+    if (HBD) {
+      const r = allRuns(), doc = { ...head, itemCount: RUN_LENGTHS.reduce((n, k) => n + r[k].length, 0), runs: r, editor };
+      // The path goes in only when a waypoint moved; otherwise the game keeps its own.
+      if (Object.keys(movedClean()).length) doc.path = SPACE_IDS.map(id => { const p = nodePos(id); return [r3(p.x), r3(p.z)]; });
+      return doc;
+    }
     const list = strip(items);
-    return { map: MAP, version: 2, savedAt: new Date().toISOString(), note: (note || '').slice(0, 300), itemCount: list.length,
-             items: list, spaces: movedClean(), looks: looksClean(), editor: BUILD_INFO ? BUILD_INFO.commit : '' };
+    return { ...head, itemCount: list.length, items: list, spaces: movedClean(), looks: looksClean(), editor };
   }
   function openModal(id) { $(id).hidden = false; }
   document.querySelectorAll('.modal').forEach(m => {
-    m.addEventListener('click', e => { if (e.target === m || e.target.hasAttribute('data-close')) m.hidden = true; });
+    on(m, 'click', e => { if (e.target === m || e.target.hasAttribute('data-close')) m.hidden = true; });
   });
   $('b-save').onclick = () => {
     if (!db) { toast('Saving to Claude isn’t available in this view. Use More → Download the layout.'); return; }
@@ -1175,15 +1342,15 @@ async function main() {
     $('m-save-go').disabled = true; updateStatus('Saving…');
     try {
       await db.doc(DOC).set(doc);
-      saved = { savedAt: doc.savedAt, json: JSON.stringify({ items: doc.items, spaces: doc.spaces, looks: doc.looks }) };
+      saved = { savedAt: doc.savedAt, json: JSON.stringify(stateOf(doc)) };
       $('m-save').hidden = true;
-      toast('Saved. Tell Claude to pull the city layout.');
+      toast(`Saved. Tell Claude to pull the ${MAP_NAME} layout.`);
       try {
         await db.collection(DOC + '/versions').doc(doc.savedAt.replace(/[^0-9A-Za-z]/g, '')).set(doc);
         const all = await db.collection(DOC + '/versions').orderBy('savedAt', 'desc').get();
         for (const d of all.docs.slice(30)) await db.doc(DOC + '/versions/' + d.id).delete();
       } catch (e) { /* the main save stands; a missed history entry is not worth an error */ }
-      try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ basedOn: saved.savedAt, items: doc.items, spaces: doc.spaces, looks: doc.looks, at: Date.now() })); } catch (e) {}
+      writeDraft();
     } catch (e) {
       toast(e && e.code === 'invalid_argument' ? 'You can look at this map but not save it. Ask the owner for edit access.' : 'The save didn’t go through. Check your connection and try again.');
     } finally { $('m-save-go').disabled = false; updateStatus(); }
@@ -1192,7 +1359,7 @@ async function main() {
   $('mm-help').onclick = () => { $('m-menu').hidden = true; openModal('m-help'); };
   $('mm-reset').onclick = () => {
     $('m-menu').hidden = true;
-    checkpoint(); moved = { ...(GAME_LAYOUT.spaces || {}) }; looks = JSON.parse(JSON.stringify(GAME_LAYOUT.looks || {})); loadItems(GAME_LAYOUT.items); renderLook(); changed(); toast('Loaded the layout the game uses now. Undo to go back.');
+    checkpoint(); restoreState(stateOf(GAME_LAYOUT)); changed(); toast('Loaded the layout the game uses now. Undo to go back.');
   };
   $('mm-export').onclick = async () => {
     const text = JSON.stringify(layoutDoc('Downloaded from the map editor'), null, 1);
@@ -1222,7 +1389,7 @@ async function main() {
         const s = document.createElement('span'); s.textContent = v.note || 'No note';
         txt.append(b, s);
         const open = document.createElement('button'); open.className = 'btn'; open.textContent = 'Open';
-        open.onclick = () => { checkpoint(); moved = { ...(v.spaces || {}) }; looks = JSON.parse(JSON.stringify(v.looks || {})); renderLook(); loadItems(upgrade(v.items || []).list); changed(); $('m-versions').hidden = true; toast('Opened that version. Undo to go back.'); };
+        open.onclick = () => { checkpoint(); const st = stateOf(v); if (!HBD) st.items = upgrade(st.items).list; restoreState(st); changed(); $('m-versions').hidden = true; toast('Opened that version. Undo to go back.'); };
         row.append(txt, open); list.appendChild(row);
       });
     } catch (e) { list.innerHTML = '<p>Couldn’t load the saved versions. Try again in a moment.</p>'; }
@@ -1234,38 +1401,68 @@ async function main() {
   let base = GAME_LAYOUT;
   const use = window.claude && window.claude.use ? n => window.claude.use(n).catch(() => null) : async () => null;
   [db, downloads] = await Promise.all([use('db'), use('downloads')]);
+  if (ac.signal.aborted) return null;
   if (db) {
     try { const snap = await db.doc(DOC).get(); if (snap.exists) base = snap.data(); }
     catch (e) { toast('Couldn’t read the saved layout; showing the game’s.'); }
   }
-  saved = { savedAt: base === GAME_LAYOUT ? null : base.savedAt, json: JSON.stringify({ items: strip(base.items || []), spaces: base.spaces || {}, looks: base.looks || {} }) };
-  moved = { ...(base.spaces || {}) };
-  looks = JSON.parse(JSON.stringify(base.looks || {}));
+  if (ac.signal.aborted) return null;
+  saved = { savedAt: base === GAME_LAYOUT ? null : base.savedAt, json: JSON.stringify(stateOf(base)) };
   // A layout saved before the street pieces were editable holds only the
   // buildings; the street pieces come from the game's layout so saving it
   // can never drop them.
-  const upgrade = list => {
-    if (list.some(i => isStreet(i.model))) return { list, added: 0 };
+  function upgrade(list) {
+    if (HBD || list.some(i => isStreet(i.model))) return { list, added: 0 };
     const extra = (GAME_LAYOUT.items || []).filter(i => isStreet(i.model));
     return { list: list.concat(extra), added: extra.length };
-  };
-  let start = base.items || [];
+  }
+  let start = stateOf(base);
   try {
     const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null');
-    if (d && Array.isArray(d.items) && d.basedOn === saved.savedAt && JSON.stringify({ items: d.items, spaces: d.spaces || {}, looks: d.looks || {} }) !== saved.json) {
-      start = d.items; moved = { ...(d.spaces || {}) }; looks = JSON.parse(JSON.stringify(d.looks || {})); setTimeout(() => toast('Restored your unsaved changes from last time.'), 400);
+    if (d && d.basedOn === saved.savedAt && (HBD ? d.runs && typeof d.runs === 'object' : Array.isArray(d.items))) {
+      const st = HBD ? { runs: d.runs, spaces: d.spaces || {} } : { items: d.items, spaces: d.spaces || {}, looks: d.looks || {} };
+      if (JSON.stringify(st) !== saved.json) { start = st; setTimeout(() => toast('Restored your unsaved changes from last time.'), 400); }
     }
   } catch (e) {}
-  const up = upgrade(start);
-  if (up.added) setTimeout(() => toast(`Added the game's ${up.added} street pieces (props, lamps, overheads, park) to your layout. Save to keep them.`), 900);
-  loadItems(up.list);
+  if (!HBD) {
+    const up = upgrade(start.items);
+    if (up.added) setTimeout(() => toast(`Added the game's ${up.added} street pieces (props, lamps, overheads, park) to your layout. Save to keep them.`), 900);
+    start.items = up.list;
+  }
+  if (HBD) setRunLen(runLen);
+  restoreState(start);
   updateStatus(); syncButtons();
-  $('loading').remove();
+  const l = $('loading'); if (l) l.remove();
   try { if (!localStorage.getItem('hbd-map-editor-seen-help')) { localStorage.setItem('hbd-map-editor-seen-help', '1'); openModal('m-help'); } } catch (e) {}
-  setTimeout(makeThumbs, 200);
-  window.__editor = { get items() { return items; }, objs, select, selectSpace, setMode, checkConflicts, get moved() { return moved; }, nodePos, get db() { return db; } };   // for QA
+  setTimeout(() => { if (!ac.signal.aborted) makeThumbs(); }, 200);
+  window.__editor = { map: MAP, get items() { return items; }, objs, select, selectSpace, setMode, checkConflicts, get moved() { return moved; }, nodePos,
+                      get db() { return db; }, get runLen() { return runLen; }, setRunLen, switchMap, state, plan };   // for QA
+  return {
+    stop() {
+      writeDraft();
+      ac.abort(); ro.disconnect();
+      renderer.dispose(); renderer.forceContextLoss();
+      document.querySelectorAll('.modal').forEach(m => { m.hidden = true; });
+      $('inspector').hidden = true; $('lookpanel').hidden = true; $('b-look').setAttribute('aria-pressed', 'false'); $('tools').style.display = '';
+    },
+  };
 }
-main().catch(e => {
+
+// ---------- switching maps ----------
+let current = null, switching = false;
+async function switchMap(map) {
+  if (switching || !MAP_NAMES[map]) return;
+  switching = true;
+  try {
+    if (current) current.stop();
+    current = null;
+    try { localStorage.setItem('hbd-map-editor-map', map); } catch (e) {}
+    current = await main(map);
+  } finally { switching = false; }
+}
+let firstMap = 'city_circuit';
+try { const m = localStorage.getItem('hbd-map-editor-map'); if (MAP_NAMES[m]) firstMap = m; } catch (e) {}
+switchMap(firstMap).catch(e => {
   const l = document.getElementById('loading');
   if (l) l.innerHTML = '<div style="max-width:420px;text-align:center;font:700 15px Nunito,sans-serif;color:#ffb3bd">The editor couldn’t start: ' +
     String(e && e.message || e).replace(/[<>&]/g, '') + '</div>';

@@ -14,6 +14,10 @@
 //       that does not move: base, ring road, spurs, avenues, park. Spaces,
 //       district pavements and the guide path follow the spaces, so the
 //       editor draws those itself.
+//   ref/hundred_block_dash.json  the path's waypoints, the realm of every
+//       block for each run length (50, 75, 100), and each realm's ground
+//       colours. Everything on that board follows the path, so the editor
+//       draws all of it.
 //
 // Run it when the board itself (spaces, roads, ground) changes; buildings
 // don't matter here. Needs Playwright and Chromium (see scripts/browser.js).
@@ -44,29 +48,26 @@ function serve() {
     return new Promise(r => server.listen(0, '127.0.0.1', () => r(server)));
 }
 
-(async () => {
-    if (!fs.existsSync(path.join(GAME, 'index.html'))) throw new Error('game/ is empty: run `git submodule update --init`');
-    const server = await serve();
-    const BASE = `http://127.0.0.1:${server.address().port}/index.html`;
-    const browser = await chromium.launch(launchOptions());
+// Boots a map in a fresh page with automatic placement and waits for the
+// first roll. ?nolayout: the map's own geometry (the layout is the editor's
+// to draw); ?noopt: the static merge would strip the marks that say which
+// ground follows the spaces.
+async function boot(browser, map, len) {
     const ctx = await browser.newContext({ viewport: { width: PX, height: PX }, deviceScaleFactor: 1, hasTouch: true });
     const page = await ctx.newPage();
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
     await page.addInitScript(() => { try { localStorage.clear(); localStorage.setItem('hbd_seen_howto', 'true'); localStorage.setItem('hbd_seen_city_briefing', 'true'); } catch (e) {} });
-    // ?nolayout: the map's own geometry and automatic placement (the layout is
-    // the editor's to draw); ?noopt: the static merge would strip the marks
-    // that say which ground follows the spaces.
     await page.goto(BASE + '?nolayout&noopt', { waitUntil: 'domcontentloaded' });
     await page.addScriptTag({ content: AGENT });
     await page.waitForFunction(() => !!window.__QA, null, { timeout: 30000 });
     await page.evaluate(() => window.__QA.bind());
-    await page.evaluate(() => window.__QA.startRun({ mode: '1p', difficulty: 'medium', map: 'city_circuit', rounds: 6 }));
+    await page.evaluate(([map, len]) => window.__QA.startRun({ mode: '1p', difficulty: 'medium', map, rounds: 6, len }), [map, len]);
     const t0 = Date.now();
     while (Date.now() - t0 < 600000) {
         const st = await page.evaluate(async () => {
             (await import('/src/engine/Renderer.js')).skipFlyover();
-            for (const id of ['btn-msg-continue', 'btn-cb-start']) { const b = document.getElementById(id); if (b && b.offsetParent) b.click(); }
+            for (const id of ['btn-msg-continue', 'btn-cb-start', 'btn-hbd-story-begin']) { const b = document.getElementById(id); if (b && b.offsetParent) b.click(); }
             const m = document.querySelector('#modal-overlay button'); if (m && m.offsetParent) m.click();
             return window.__QA.snapshot().gameState;
         }).catch(() => '');
@@ -75,6 +76,16 @@ function serve() {
     }
     await page.waitForTimeout(2000);
     await page.evaluate(async () => { (await import('/src/engine/Renderer.js')).setBoardPaused(true); });
+    return { page, ctx, errors };
+}
+
+let BASE = '';
+(async () => {
+    if (!fs.existsSync(path.join(GAME, 'index.html'))) throw new Error('game/ is empty: run `git submodule update --init`');
+    const server = await serve();
+    BASE = `http://127.0.0.1:${server.address().port}/index.html`;
+    const browser = await chromium.launch(launchOptions());
+    const { page, errors } = await boot(browser, 'city_circuit');
 
     const out = await page.evaluate(async ({ HALF }) => {
         const R = await import('/src/engine/Renderer.js');
@@ -118,6 +129,20 @@ function serve() {
     fs.writeFileSync(path.join(refDir, 'city_circuit.json'), JSON.stringify(out.ref, null, 1));
     fs.writeFileSync(path.join(refDir, 'city_circuit-ground.jpg'), Buffer.from(out.ground.split(',')[1], 'base64'));
     console.log(`reference: ${out.ref.nodes.filter(n => !n.junction).length} spaces, ${out.ref.roads.length} roads, ${out.ref.runs.length} district runs, space radius ${out.ref.spaceR}`);
+
+    // Hundred Block Dash, once per run length: the realms split the path by length.
+    const hbd = { map: 'hundred_block_dash', version: 1, lengths: {} };
+    for (const len of [50, 75, 100]) {
+        const run = await boot(browser, 'hundred_block_dash', len);
+        const r = await run.page.evaluate(async () => (await import('/src/engine/Renderer.js')).qaHbdRef());
+        if (!r || r.length !== len) throw new Error(`Hundred Block Dash did not start at ${len} blocks`);
+        Object.assign(hbd, { waypoints: r.waypoints, style: r.style, ribbonHalf: r.ribbonHalf, groundY: r.groundY });
+        hbd.lengths[len] = r.realms;
+        errors.push(...run.errors);
+        await run.ctx.close();
+    }
+    fs.writeFileSync(path.join(refDir, 'hundred_block_dash.json'), JSON.stringify(hbd, null, 1));
+    console.log(`reference: Hundred Block Dash, ${hbd.waypoints.length} waypoints, realms for ${Object.keys(hbd.lengths).join('/')} blocks`);
 
     console.log('errors:', errors.length ? errors.slice(0, 3) : 'none');
     await browser.close();

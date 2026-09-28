@@ -131,6 +131,69 @@ const ok = (n, c, d) => (c ? pass : fail).push(n + (d ? ' — ' + d : ''));
     console.log('after save', JSON.stringify(r6));
     
   }
+  // ---- Hundred Block Dash ----
+  await p.click('#map-hbd');
+  await p.waitForFunction(() => window.__editor.map === 'hundred_block_dash' && window.__editor.items.length > 0, null, { timeout: 30000 });
+  await p.waitForTimeout(1500);
+  await p.evaluate(() => document.querySelectorAll('.modal').forEach(m => m.hidden = true));
+  await p.screenshot({ path: OUT + '/hbd-plan.png' });
+  const h0 = await p.evaluate(() => ({ n: window.__editor.items.length, len: window.__editor.runLen, cards: document.querySelectorAll('#cards .card').length,
+      models: [...new Set(window.__editor.items.map(i => i.model.split('-')[0]))].sort().join(','), conf: document.getElementById('b-conf').textContent,
+      look: getComputedStyle(document.getElementById('b-look')).display, lens: !document.getElementById('lenseg').hidden }));
+  console.log('hbd', JSON.stringify(h0));
+  ok('Hundred Block Dash opens on its 100-block scenery', h0.len === '100' && h0.n === 290 && h0.models === 'decor,lm,scatter' && h0.lens, JSON.stringify(h0));
+  ok('its library holds only its own models, and Look is gone', h0.cards === 12 && h0.look === 'none', JSON.stringify(h0));
+  // Screen position of a world point in the plan view (north up).
+  const planScreen = ({ x, z }) => p.evaluate(({ x, z }) => {
+    const c = document.getElementById('view').getBoundingClientRect(), P = window.__editor.plan, a = c.width / c.height;
+    return { sx: c.left + ((x - P.cx) / (P.half * a) + 1) / 2 * c.width, sy: c.top + ((z - P.cz) / P.half + 1) / 2 * c.height };
+  }, { x, z });
+  // Drag a waypoint: the path bends and the waypoint is recorded.
+  const wp0 = await p.evaluate(() => window.__editor.nodePos('p3'));
+  const ws = await planScreen(wp0);
+  await p.mouse.move(ws.sx, ws.sy); await p.mouse.down(); await p.mouse.move(ws.sx + 30, ws.sy, { steps: 8 }); await p.mouse.up();
+  const wp1 = await p.evaluate(() => ({ pos: window.__editor.nodePos('p3'), moved: Object.keys(window.__editor.moved), name: document.getElementById('i-name').textContent }));
+  ok('a mouse drag moves a path point', wp1.moved.join() === 'p3' && wp1.pos.x - wp0.x > 5 && wp1.name === 'Path point 3', JSON.stringify(wp1));
+  // Move a piece of scenery with the inspector's typed position.
+  const dec = await p.evaluate(() => { const it = window.__editor.items.find(i => i.model === 'lm-ember'); window.__editor.select(it.uid); return { uid: it.uid, x: it.x }; });
+  await p.fill('#i-x', String(Math.round(dec.x) + 12)); await p.press('#i-x', 'Enter');
+  const dec1 = await p.evaluate(uid => window.__editor.items.find(i => i.uid === uid).x, dec.uid);
+  ok('typing a position moves the volcano', Math.abs(dec1 - (Math.round(dec.x) + 12)) < 1e-6, `${dec.x} → ${dec1}`);
+  await p.screenshot({ path: OUT + '/hbd-edit.png' });
+  // The 50-block run has its own scenery; the 100 run is marked as changed.
+  await p.click('#lenseg [data-len="50"]');
+  const h1 = await p.evaluate(() => ({ n: window.__editor.items.length, len: window.__editor.runLen, b100: document.querySelector('#lenseg [data-len="100"]').textContent, b50: document.querySelector('#lenseg [data-len="50"]').textContent }));
+  ok('the 50-block run shows its own scenery', h1.len === '50' && h1.n === 144 && h1.b100 === '100 •' && h1.b50 === '50', JSON.stringify(h1));
+  // Undo the typed move while on the 50 run: the 100 run gets it back.
+  await p.click('#b-undo');
+  const h2 = await p.evaluate(() => window.__editor.state().runs['100'].find(i => i.model === 'lm-ember').x);
+  ok('undo reaches the run not on the board', Math.abs(h2 - dec.x) < 1e-3, `${h2} vs ${dec.x}`);
+  await p.click('#b-redo');
+  // Save, and run the saved layout through the game's own checker.
+  await p.click('#b-save'); await p.fill('#m-note', 'hbd test save'); await p.click('#m-save-go'); await p.waitForTimeout(800);
+  const hs = await p.evaluate(() => window.__store['layouts/hundred_block_dash']);
+  ok('Save writes Hundred Block Dash with every run and the path', !!hs && Object.keys(hs.runs).join() === '50,75,100' && hs.path && hs.path.length === 12 && !hs.items && hs.itemCount === 652,
+     hs ? JSON.stringify({ runs: Object.keys(hs.runs), path: hs.path && hs.path.length, items: !!hs.items, n: hs.itemCount }) : 'nothing saved');
+  if (hs) {
+    const { validate, loadModels } = require(path.join(ROOT, 'game/scripts/apply-layout.js'));
+    let verdict = 'ok';
+    try { const v = validate(hs, await loadModels()); verdict += ` (${v.path.length} waypoints, ${Object.values(v.runs).reduce((n, r) => n + r.length, 0)} items)`; } catch (e) { verdict = e.message; }
+    ok('the game\'s apply-layout accepts the saved layout', verdict.startsWith('ok'), verdict);
+  }
+  // Unsaved work survives switching maps.
+  await p.evaluate(() => { const it = window.__editor.items[0]; window.__editor.select(it.uid); });
+  await p.click('#i-del');
+  const n50 = await p.evaluate(() => window.__editor.items.length);
+  await p.click('#map-city');
+  await p.waitForFunction(() => window.__editor.map === 'city_circuit' && window.__editor.items.length > 0, null, { timeout: 30000 });
+  const c1 = await p.evaluate(() => ({ n: window.__editor.items.length, status: document.getElementById('status').textContent, cards: document.querySelectorAll('#cards .card').length }));
+  await p.click('#map-hbd');
+  await p.waitForFunction(() => window.__editor.map === 'hundred_block_dash' && window.__editor.items.length > 0, null, { timeout: 30000 });
+  const h3 = await p.evaluate(() => ({ n: window.__editor.items.length, len: window.__editor.runLen, fifty: window.__editor.state().runs['50'].length, status: document.getElementById('status').textContent }));
+  ok('switching maps keeps each map\'s work', c1.n === 182 && c1.cards > 12 && h3.fifty === n50 && h3.status === 'Unsaved changes', JSON.stringify({ c1, n50, h3 }));
+  await p.click('#v-3d'); await p.waitForTimeout(1500);
+  await p.screenshot({ path: OUT + '/hbd-3d.png' });
+
   ok('no page errors', !errs.length, errs.slice(0, 3).join(' | '));
   await b.close();
   console.log('PASS ' + pass.length); pass.forEach(x => console.log('  ✓ ' + x));

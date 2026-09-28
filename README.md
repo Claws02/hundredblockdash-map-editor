@@ -1,6 +1,6 @@
 # Hundred Block Dash: map editor
 
-Place, move, turn and resize City Circuit's buildings and landmarks over the real board, then hand the layout to the game.
+Place, move, turn and resize everything that stands on City Circuit (buildings, landmarks, street props, overhead spans, lamps, benches, trees and the fountain) over the real board, then hand the layout to the game.
 
 **Open the editor:** https://claude.ai/artifact/NuwJ1mBP2ZaybkCrjZsU7Z. It's a private claude.ai page, built for iPad and usable in any browser.
 
@@ -27,7 +27,8 @@ game/src/engine/CityKit.js ──(verbatim, at build)──► editor page ─�
 - **Turn:** drag the gold handle. The handle marks the front, which should face the road.
 - **Look around:** pinch to zoom, and drag empty ground to pan (orbit in 3D). Plan and 3D views are at the top.
 - **Adjust:** the panel at the bottom holds variant, HQ, size and exact position, plus Duplicate and Delete.
-- **Red** means the building overlaps another one, or stands on a space (within about 3.1 units of its centre) or on the road (within 3 units of its centre line). The "N to fix" button walks through them.
+- **Layers** hides whole kinds of pieces (props, overheads and so on) while you arrange the rest.
+- **Red** means the piece overlaps another one, or stands on a space (within about 3.1 units of its centre) or on the road (within 3 units of its centre line). The "N to fix" button walks through them.
 - **Undo and redo** are there, and your work is kept on the device between saves.
 - **Save for Claude** stores the layout and adds a saved version. Add a note saying what changed, then ask Claude to pull the city layout.
 - **More** holds saved versions, a JSON download, and starting again from the game's current layout.
@@ -64,6 +65,6 @@ Then republish `dist/city-map-editor.html` to the editor's URL; saved layouts an
 
 ## Not in this version
 
-- Street props (lamps, benches, crates), the overhead gantries and the traffic are fixed. You can see them in the floor image, but you can't move them.
+- The traffic (moving cars and people) is fixed.
 - Spaces and roads are fixed. Moving them changes gameplay geometry.
 - City Circuit only. Hundred Block Dash can follow once its realm landmarks move into the model kit.

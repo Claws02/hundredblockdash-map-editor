@@ -127,6 +127,7 @@ kbd { font: 800 11px 'Nunito', sans-serif; border: 1px solid var(--line); border
     </div>
     <button class="chip" id="b-snap" aria-pressed="true" title="Snap moves to half a unit and turns to 15°">Snap</button>
     <button class="chip" id="b-keep" aria-pressed="true" title="Show where buildings must not stand">Keep-outs</button>
+    <button class="chip" id="b-layers" title="Show or hide kinds of pieces">Layers</button>
     <button class="btn" id="b-undo" disabled title="Undo" aria-label="Undo">↶</button>
     <button class="btn" id="b-redo" disabled title="Redo" aria-label="Redo">↷</button>
     <button class="chip good" id="b-conf" title="Jump to the next building in trouble">No conflicts</button>
@@ -180,6 +181,14 @@ kbd { font: 800 11px 'Nunito', sans-serif; border: 1px solid var(--line); border
   </main>
 </div>
 
+<div class="modal" id="m-layers" hidden role="dialog" aria-modal="true" aria-labelledby="m-layers-h">
+  <div class="sheet">
+    <h2 id="m-layers-h">Layers</h2>
+    <p>Hidden pieces stay in the layout; they just can't be seen or picked while you work on the rest.</p>
+    <div class="tabs" id="layer-list"></div>
+    <div class="acts"><button class="btn primary" data-close>Done</button></div>
+  </div>
+</div>
 <div class="modal" id="m-save" hidden role="dialog" aria-modal="true" aria-labelledby="m-save-h">
   <div class="sheet">
     <h2 id="m-save-h">Save for Claude</h2>
@@ -217,7 +226,8 @@ kbd { font: 800 11px 'Nunito', sans-serif; border: 1px solid var(--line); border
       <b>Turn</b><span>Drag the gold handle. It marks the building's front; fronts should face the road.</span>
       <b>Look around</b><span>Drag empty ground to pan (orbit in 3D). Pinch to zoom.</span>
       <b>Change it</b><span>Variant, HQ, size and exact position are in the panel at the bottom.</span>
-      <b>Red</b><span>The building overlaps another, or stands on a space or the road.</span>
+      <b>Red</b><span>The piece overlaps another, or stands on a space or the road. Overhead spans are meant to cross the road.</span>
+      <b>Layers</b><span>Hide kinds of pieces (props, overheads…) while you arrange the rest.</span>
       <b>Save</b><span><i>Save for Claude</i> stores the layout where Claude can read it. Your work is also kept on this device between saves.</span>
       <b>Keys</b><span><kbd>⌫</kbd> delete · <kbd>R</kbd> turn 15° · <kbd>D</kbd> duplicate · <kbd>⌘Z</kbd> undo · <kbd>⇧⌘Z</kbd> redo</span>
     </div>
@@ -252,6 +262,10 @@ async function main() {
   const undoStack = [], redoStack = [];
   let saved = { savedAt: GAME_LAYOUT?.savedAt || null, json: '' };
   let db = null, downloads = null;
+  const CATS = [['building', 'Buildings'], ['landmark', 'Landmarks'], ['prop', 'Street props'], ['span', 'Overheads'], ['furniture', 'Furniture']];
+  const catOf = model => (MODELS[model] || {}).cat || 'building';
+  const isStreet = model => ['prop', 'span', 'furniture'].includes(catOf(model));
+  const hiddenCats = new Set();
   const strip = list => list.map(({ model, seed, hq, x, z, rotY, scale }) => ({ model, seed, hq: !!hq, x: r3(x), z: r3(z), rotY: r3(rotY), scale: r3(scale) }));
   function r3(n) { return Math.round(n * 1000) / 1000; }
   const withUids = list => list.map(it => ({ ...it, uid: uidSeq++ }));
@@ -376,6 +390,13 @@ async function main() {
     g.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(g);
     const rect = { x0: box.min.x, x1: box.max.x, z0: box.min.z, z1: box.max.z };
+    // What stands on the ground: only parts that reach down to it count for
+    // conflicts, so a lamp's arm or an awning over the road is not "on" it,
+    // and only parts that stick up out of it, so a paving slab (the plaza
+    // around the fountain) is not an obstacle to what stands on it.
+    const gb = new THREE.Box3(), mb = new THREE.Box3();
+    g.traverse(o => { if (o.isMesh) { mb.setFromObject(o); if (mb.min.y < 1.0 && mb.max.y > 0.3) gb.union(mb); } });
+    const foot = gb.isEmpty() ? rect : { x0: gb.min.x, x1: gb.max.x, z0: gb.min.z, z1: gb.max.z };
     g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.userData.uid = it.uid; } });
     g.userData.uid = it.uid;
     const outline = new THREE.Mesh(outlineGeo(rect, it.scale), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, depthTest: false, side: THREE.DoubleSide }));
@@ -383,7 +404,8 @@ async function main() {
     const fill = new THREE.Mesh(fillGeo(rect, it.scale), new THREE.MeshBasicMaterial({ color: 0xff5a6e, transparent: true, opacity: 0.3, depthWrite: false, side: THREE.DoubleSide }));
     fill.visible = false;
     scene.add(g, outline, fill);
-    objs.set(it.uid, { g, rect, outline, fill, conflicts: [], builtScale: it.scale });
+    objs.set(it.uid, { g, rect, foot, outline, fill, conflicts: [], builtScale: it.scale });
+    applyLayer(it);
     place(it);
   }
   function place(it) {
@@ -406,6 +428,28 @@ async function main() {
     stem.position.set(it.x, 0.19, it.z);
     stem.rotation.y = it.rotY;
   }
+  function applyLayer(it) {
+    const o = objs.get(it.uid); if (!o) return;
+    const show = !hiddenCats.has(catOf(it.model));
+    o.g.visible = o.outline.visible = show;
+    if (!show) o.fill.visible = false;
+  }
+  function renderLayers() {
+    const box = $('layer-list'); box.innerHTML = '';
+    CATS.forEach(([cat, label]) => {
+      const n = items.filter(i => catOf(i.model) === cat).length;
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'tab';
+      b.textContent = `${label} (${n})`; b.setAttribute('aria-pressed', String(!hiddenCats.has(cat)));
+      b.onclick = () => {
+        hiddenCats.has(cat) ? hiddenCats.delete(cat) : hiddenCats.add(cat);
+        items.forEach(applyLayer);
+        if (selected && hiddenCats.has(catOf(itemBy(selected)?.model))) select(null);
+        renderLayers(); paintOutlines(); requestRender();
+        $('b-layers').textContent = hiddenCats.size ? `Layers (${CATS.length - hiddenCats.size}/${CATS.length})` : 'Layers';
+      };
+      box.appendChild(b);
+    });
+  }
   function rebuildAll() {
     for (const [uid, o] of objs) { scene.remove(o.g, o.outline, o.fill); objs.delete(uid); }
     items.forEach(build);
@@ -417,7 +461,7 @@ async function main() {
   // separating-axis test between two of them, and a circle against one.
   function corners(it) {
     const o = objs.get(it.uid); const c = Math.cos(it.rotY), s = Math.sin(it.rotY);
-    return rectShape(o.rect, it.scale, -0.05).map(([x, z]) => ({ x: it.x + x * c + z * s, z: it.z - x * s + z * c }));
+    return rectShape(o.foot, it.scale, -0.05).map(([x, z]) => ({ x: it.x + x * c + z * s, z: it.z - x * s + z * c }));
   }
   function overlapRects(A, B) {
     for (const P of [A, B]) for (let i = 0; i < 4; i++) {
@@ -430,11 +474,12 @@ async function main() {
     }
     return true;
   }
-  function circleHits(it, px, pz, r) {
+  function circleHits(it, px, pz, r, useFoot = true) {
     const o = objs.get(it.uid), c = Math.cos(it.rotY), s = Math.sin(it.rotY);
+    const rc = useFoot ? o.foot : o.rect;
     const dx = px - it.x, dz = pz - it.z;
     const lx = (dx * c - dz * s) / it.scale, lz = (dx * s + dz * c) / it.scale;   // into the building's own frame
-    const qx = Math.max(o.rect.x0, Math.min(o.rect.x1, lx)), qz = Math.max(o.rect.z0, Math.min(o.rect.z1, lz));
+    const qx = Math.max(rc.x0, Math.min(rc.x1, lx)), qz = Math.max(rc.z0, Math.min(rc.z1, lz));
     return Math.hypot((lx - qx) * it.scale, (lz - qz) * it.scale) < r;
   }
   function checkConflicts() {
@@ -442,11 +487,17 @@ async function main() {
     for (let i = 0; i < info.length; i++) for (let j = i + 1; j < info.length; j++) {
       const A = info[i], B = info[j];
       if (Math.hypot(A.it.x - B.it.x, A.it.z - B.it.z) > A.R + B.R) continue;
+      // An overhead span stands over the road between buildings; it only
+      // clashes with a building or landmark, never with the props under it.
+      const ca = catOf(A.it.model), cb = catOf(B.it.model), solid = c => c === 'building' || c === 'landmark';
+      if ((ca === 'span' && !solid(cb)) || (cb === 'span' && !solid(ca))) continue;
       if (overlapRects(A.c, B.c)) { A.list.push('overlaps ' + MODELS[B.it.model].name); B.list.push('overlaps ' + MODELS[A.it.model].name); }
     }
     for (const A of info) {
+      if (!MODELS[A.it.model].spansRoad) {
       if (REF.spaces.some(s => Math.hypot(s.x - A.it.x, s.z - A.it.z) < A.R + SPACE_R && circleHits(A.it, s.x, s.z, SPACE_R))) A.list.push('stands on a space');
       if (roadPts.some(p => Math.hypot(p.x - A.it.x, p.z - A.it.z) < A.R + ROAD_HALF && circleHits(A.it, p.x, p.z, ROAD_HALF))) A.list.push('stands on the road');
+      }
       if (Math.hypot(A.it.x, A.it.z) > REACH - 2) A.list.push('is off the edge of the board');
       const o = objs.get(A.it.uid); o.conflicts = [...new Set(A.list)];
     }
@@ -462,11 +513,12 @@ async function main() {
       const bad = o.conflicts.length > 0, sel = it.uid === selected;
       o.outline.material.color.set(sel ? 0xf5b301 : bad ? 0xff5a6e : 0xffffff);
       o.outline.material.opacity = sel || bad ? 0.95 : (mode === 'plan' ? 0.5 : 0);
-      o.fill.visible = bad;
+      o.fill.visible = bad && o.g.visible;
+      o.outline.visible = o.g.visible;
     }
     if (selected) {
       const o = objs.get(selected);
-      $('warn').textContent = o && o.conflicts.length ? 'This building ' + o.conflicts.join(', ') + '.' : '';
+      $('warn').textContent = o && o.conflicts.length ? 'This piece ' + o.conflicts.join(', ') + '.' : '';
     }
     requestRender();
   }
@@ -516,7 +568,7 @@ async function main() {
     if (it) {
       const M = MODELS[it.model];
       $('i-name').textContent = M.name + (it.hq ? ' HQ' : '');
-      $('i-ds').textContent = M.district + (M.landmark ? ' · landmark' : '');
+      $('i-ds').textContent = M.district + ' · ' + CATS.find(c => c[0] === catOf(it.model))[1].toLowerCase();
       $('r-var').style.display = M.variants || M.hq ? '' : 'none';
       for (const id of ['i-vprev', 'i-vnext', 'i-vrand', 'i-seed']) $(id).style.display = M.variants ? '' : 'none';
       $('i-hq').style.display = M.hq ? '' : 'none';
@@ -537,10 +589,11 @@ async function main() {
     checkConflicts(); refreshSelection(); changed();
   }
   const okSeed = (model, s) => !(model === 'ring' && s % 4 === 0);   // a ring seed of that kind is a tree
-  function stepSeed(it, d) { let s = it.seed; do { s = (s + d + 100) % 100; } while (!okSeed(it.model, s)); it.seed = s; }
+  const seedsOf = model => (MODELS[model] || {}).seeds || 100;
+  function stepSeed(it, d) { const n = seedsOf(it.model); let s = it.seed; do { s = (s + d + n) % n; } while (!okSeed(it.model, s)); it.seed = s; }
   $('i-vprev').onclick = () => edit(it => stepSeed(it, -1), { rebuild: true });
   $('i-vnext').onclick = () => edit(it => stepSeed(it, 1), { rebuild: true });
-  $('i-vrand').onclick = () => edit(it => { let s; do { s = Math.floor(Math.random() * 100); } while (!okSeed(it.model, s)); it.seed = s; }, { rebuild: true });
+  $('i-vrand').onclick = () => edit(it => { let s; do { s = Math.floor(Math.random() * seedsOf(it.model)); } while (!okSeed(it.model, s)); it.seed = s; }, { rebuild: true });
   $('i-hq').onclick = () => edit(it => { it.hq = !it.hq; }, { rebuild: true });
   const turn = d => edit(it => { it.rotY = Math.atan2(Math.sin(it.rotY + d), Math.cos(it.rotY + d)); });
   $('i-l90').onclick = () => turn(-Math.PI / 2); $('i-l15').onclick = () => turn(-TURN);
@@ -591,7 +644,7 @@ async function main() {
       const r = canvas.getBoundingClientRect();
       ndc.set(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1);
       ray.setFromCamera(ndc, cam);
-      const hits = ray.intersectObjects([...objs.values()].map(o => o.g), true);
+      const hits = ray.intersectObjects([...objs.values()].filter(o => o.g.visible).map(o => o.g), true);
       for (const h of hits) { let o = h.object; while (o && o.userData.uid === undefined) o = o.parent; if (o) return o.userData.uid; }
       return null;
     }
@@ -599,7 +652,8 @@ async function main() {
     let best = null, bestArea = Infinity;
     for (const it of items) {
       const o = objs.get(it.uid); if (!o) continue;
-      if (circleHits(it, g.x, g.z, 0.01)) {
+      if (hiddenCats.has(catOf(it.model))) continue;
+      if (circleHits(it, g.x, g.z, 0.01, false)) {
         const area = (o.rect.x1 - o.rect.x0) * (o.rect.z1 - o.rect.z0) * it.scale * it.scale - (it.uid === selected ? 1e6 : 0);
         if (area < bestArea) { bestArea = area; best = it.uid; }
       }
@@ -726,6 +780,7 @@ async function main() {
   $('b-snap').onclick = () => { snap = !snap; $('b-snap').setAttribute('aria-pressed', String(snap)); toast(snap ? 'Snap on: half a unit, 15°' : 'Snap off'); };
   $('b-keep').onclick = () => { showKeep = !showKeep; keep.visible = showKeep; $('b-keep').setAttribute('aria-pressed', String(showKeep)); requestRender(); };
   $('b-undo').onclick = undo; $('b-redo').onclick = redo;
+  $('b-layers').onclick = () => { renderLayers(); openModal('m-layers'); };
   $('b-lib').onclick = () => { const closed = $('app').classList.toggle('lib-closed'); $('b-lib').setAttribute('aria-pressed', String(!closed)); };
   $('b-fit').onclick = () => { plan.cx = plan.cz = 0; plan.half = 95; orbit.tx = orbit.tz = 0; orbit.dist = 150; updateCams(); };
   $('b-turn').onclick = () => { plan.ang = (plan.ang + Math.PI / 2) % (Math.PI * 2); updateCams(); };
@@ -738,13 +793,13 @@ async function main() {
     LIB.push({ model: key, hq: false });
     if (M.hq) LIB.push({ model: key, hq: true });
   });
-  const TABS = ['All', 'Financial District', 'Back Alley', 'Shopping Promenade', 'Industrial Zone', 'Ring Road', 'Landmarks'];
+  const TABS = ['All', ...CATS.map(c => c[1])];
   let tab = 'All';
   function renderTabs() {
     $('tabs').innerHTML = '';
     TABS.forEach(t => {
       const b = document.createElement('button'); b.className = 'tab'; b.type = 'button';
-      b.textContent = t.replace(' District', '').replace('Shopping ', '').replace(' Zone', '');
+      b.textContent = t;
       b.setAttribute('aria-pressed', String(t === tab));
       b.onclick = () => { tab = t; renderTabs(); renderCards(); };
       $('tabs').appendChild(b);
@@ -753,14 +808,14 @@ async function main() {
   const thumbs = {};
   function renderCards() {
     const box = $('cards'); box.innerHTML = '';
-    LIB.filter(e => tab === 'All' || (tab === 'Landmarks' ? MODELS[e.model].landmark : (MODELS[e.model].district === tab && !MODELS[e.model].landmark)))
+    LIB.filter(e => tab === 'All' || CATS.find(c => c[1] === tab)[0] === catOf(e.model))
       .forEach(e => {
         const M = MODELS[e.model];
         const c = document.createElement('button'); c.className = 'card'; c.type = 'button';
         const key = e.model + (e.hq ? '-hq' : '');
         c.innerHTML = `<span class="thumb" data-thumb="${key}"></span><span class="nm"></span><span class="ds"></span>`;
         c.querySelector('.nm').textContent = M.name; if (e.hq) c.querySelector('.nm').insertAdjacentHTML('beforeend', '<span class="badge">HQ</span>');
-        c.querySelector('.ds').textContent = M.landmark ? 'Landmark' : M.district;
+        c.querySelector('.ds').textContent = M.district;
         if (thumbs[key]) c.querySelector('.thumb').style.backgroundImage = `url(${thumbs[key]})`;
         c.onclick = () => add(e);
         box.appendChild(c);
@@ -804,7 +859,7 @@ async function main() {
   // ---------- saving ----------
   function layoutDoc(note) {
     const list = strip(items);
-    return { map: MAP, version: 1, savedAt: new Date().toISOString(), note: (note || '').slice(0, 300), itemCount: list.length,
+    return { map: MAP, version: 2, savedAt: new Date().toISOString(), note: (note || '').slice(0, 300), itemCount: list.length,
              items: list, editor: BUILD_INFO ? BUILD_INFO.commit : '' };
   }
   function openModal(id) { $(id).hidden = false; }
@@ -867,7 +922,7 @@ async function main() {
         const s = document.createElement('span'); s.textContent = v.note || 'No note';
         txt.append(b, s);
         const open = document.createElement('button'); open.className = 'btn'; open.textContent = 'Open';
-        open.onclick = () => { checkpoint(); loadItems(v.items || []); changed(); $('m-versions').hidden = true; toast('Opened that version. Undo to go back.'); };
+        open.onclick = () => { checkpoint(); loadItems(upgrade(v.items || []).list); changed(); $('m-versions').hidden = true; toast('Opened that version. Undo to go back.'); };
         row.append(txt, open); list.appendChild(row);
       });
     } catch (e) { list.innerHTML = '<p>Couldn’t load the saved versions. Try again in a moment.</p>'; }
@@ -884,6 +939,14 @@ async function main() {
     catch (e) { toast('Couldn’t read the saved layout; showing the game’s.'); }
   }
   saved = { savedAt: base === GAME_LAYOUT ? null : base.savedAt, json: JSON.stringify(strip(base.items || [])) };
+  // A layout saved before the street pieces were editable holds only the
+  // buildings; the street pieces come from the game's layout so saving it
+  // can never drop them.
+  const upgrade = list => {
+    if (list.some(i => isStreet(i.model))) return { list, added: 0 };
+    const extra = (GAME_LAYOUT.items || []).filter(i => isStreet(i.model));
+    return { list: list.concat(extra), added: extra.length };
+  };
   let start = base.items || [];
   try {
     const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null');
@@ -891,7 +954,9 @@ async function main() {
       start = d.items; setTimeout(() => toast('Restored your unsaved changes from last time.'), 400);
     }
   } catch (e) {}
-  loadItems(start);
+  const up = upgrade(start);
+  if (up.added) setTimeout(() => toast(`Added the game's ${up.added} street pieces (props, lamps, overheads, park) to your layout. Save to keep them.`), 900);
+  loadItems(up.list);
   updateStatus(); syncButtons();
   $('loading').remove();
   try { if (!localStorage.getItem('hbd-map-editor-seen-help')) { localStorage.setItem('hbd-map-editor-seen-help', '1'); openModal('m-help'); } } catch (e) {}

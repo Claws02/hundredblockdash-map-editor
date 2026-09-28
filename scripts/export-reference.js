@@ -5,11 +5,15 @@
 // Circuit with automatic placement (?nolayout), and writes what the editor
 // shows as fixed reference:
 //
-//   ref/city_circuit.json        every space (id, position, district),
-//       the roads as centre lines, the space radius, and the bounds of...
+//   ref/city_circuit.json        every node (id, original position, district,
+//       junction or not), the roads as node lists, each district's run (lobe
+//       ends and samples, pavement width and colour), the space radius, and
+//       the bounds of...
 //       (image top is -z, right is +x; it spans -half..half on both axes)
-//   ref/city_circuit-ground.jpg  ...a straight-down render of the ground,
-//       roads and spaces with everything tall left out.
+//   ref/city_circuit-ground.jpg  ...a straight-down render of the ground
+//       that does not move: base, ring road, spurs, avenues, park. Spaces,
+//       district pavements and the guide path follow the spaces, so the
+//       editor draws those itself.
 //
 // Run it when the board itself (spaces, roads, ground) changes; buildings
 // don't matter here. Needs Playwright and Chromium (see scripts/browser.js).
@@ -50,7 +54,10 @@ function serve() {
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
     await page.addInitScript(() => { try { localStorage.clear(); localStorage.setItem('hbd_seen_howto', 'true'); localStorage.setItem('hbd_seen_city_briefing', 'true'); } catch (e) {} });
-    await page.goto(BASE + '?nolayout', { waitUntil: 'domcontentloaded' });
+    // ?nolayout: the map's own geometry and automatic placement (the layout is
+    // the editor's to draw); ?noopt: the static merge would strip the marks
+    // that say which ground follows the spaces.
+    await page.goto(BASE + '?nolayout&noopt', { waitUntil: 'domcontentloaded' });
     await page.addScriptTag({ content: AGENT });
     await page.waitForFunction(() => !!window.__QA, null, { timeout: 30000 });
     await page.evaluate(() => window.__QA.bind());
@@ -77,15 +84,10 @@ function serve() {
         sc.updateMatrixWorld(true);
         const r3 = n => Math.round(n * 1000) / 1000;
 
-        // The fixed reference: spaces and roads.
-        const g = AM.graph();
-        const spaces = AM.ordered().filter(id => !AM.isJunction(id)).map(id => {
-            const v = R.getPos(id);
-            // No space type: every match rolls its own, and the editor only needs where spaces are.
-            return { id, x: r3(v.x), z: r3(v.z), district: g[id]?.district || 'ring' };
-        });
-        const roads = AM.roads().map(rd => ({ district: rd.district,
-            pts: rd.nodes.map(id => { const v = R.getPos(id); return [r3(v.x), r3(v.z)]; }) }));
+        // The board: every node (original positions), the roads, and each
+        // district's run (lobe ends, samples, pavement width and colour), as
+        // the game describes itself.
+        const board = R.qaBoardRef();
         let tileR = 0;
         const box = new THREE.Box3(), size = new THREE.Vector3();
         R.getTileMeshes().slice(0, 12).forEach(m => { box.setFromObject(m).getSize(size); tileR = Math.max(tileR, Math.max(size.x, size.z) / 2); });
@@ -95,7 +97,10 @@ function serve() {
         const dice = R.getDiceGroup();
         const tall = new THREE.Box3();
         const ground = R.qaRenderTopDown(HALF, o => {
-            if (o.userData?.kit || tokens.has(o) || o === dice) return true;
+            if (o.userData?.kit || o.userData?.followsSpaces || tokens.has(o) || o === dice) return true;
+            // The board's own group (tiles, guide path, icons) and anything else
+            // outside the city group moves with the spaces: the editor draws it.
+            if (o.parent === sc && o.name !== 'cityEnv' && !o.isLight) return true;
             // Only the city's own pieces are judged by height: the containers
             // (the city group, the board's tile group) are tall only because
             // of what they hold.
@@ -105,14 +110,14 @@ function serve() {
             }
             return false;
         });
-        return { ref: { map: 'city_circuit', half: HALF, spaceR: r3(tileR), spaces, roads }, ground };
+        return { ref: { map: 'city_circuit', version: 2, half: HALF, spaceR: r3(tileR), ...board }, ground };
     }, { HALF });
 
     const refDir = path.join(ROOT, 'ref');
     fs.mkdirSync(refDir, { recursive: true });
     fs.writeFileSync(path.join(refDir, 'city_circuit.json'), JSON.stringify(out.ref, null, 1));
     fs.writeFileSync(path.join(refDir, 'city_circuit-ground.jpg'), Buffer.from(out.ground.split(',')[1], 'base64'));
-    console.log(`reference: ${out.ref.spaces.length} spaces, ${out.ref.roads.length} roads, space radius ${out.ref.spaceR}`);
+    console.log(`reference: ${out.ref.nodes.filter(n => !n.junction).length} spaces, ${out.ref.roads.length} roads, ${out.ref.runs.length} district runs, space radius ${out.ref.spaceR}`);
 
     console.log('errors:', errors.length ? errors.slice(0, 3) : 'none');
     await browser.close();

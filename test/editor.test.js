@@ -83,6 +83,24 @@ const ok = (n, c, d) => (c ? pass : fail).push(n + (d ? ' — ' + d : ''));
   const r5 = await p.evaluate(() => ({ n: window.__editor.items.length, last: window.__editor.items.at(-1).model }));
   ok('a library tap adds a model', r5.n === r1.items + 1, JSON.stringify(r5));
   console.log('after add', JSON.stringify(r5));
+  // Spaces: drag one, check it moved and the board followed, put it back, drag it again.
+  const toScreen = ({ x, z }) => p.evaluate(({ x, z }) => {
+    const c = document.getElementById('view').getBoundingClientRect(), half = 95, a = c.width / c.height;
+    return { sx: c.left + (x / (half * a) + 1) / 2 * c.width, sy: c.top + (z / half + 1) / 2 * c.height };
+  }, { x, z });
+  await p.evaluate(() => { window.__editor.select(null); document.getElementById('b-fit').click(); });
+  const sp0 = await p.evaluate(() => window.__editor.nodePos('fin_4'));
+  const ss = await toScreen(sp0);
+  const dragSpace = async () => { await p.mouse.move(ss.sx, ss.sy); await p.mouse.down(); await p.mouse.move(ss.sx - 30, ss.sy + 25, { steps: 8 }); await p.mouse.up(); };
+  await dragSpace();
+  const sp1 = await p.evaluate(() => ({ pos: window.__editor.nodePos('fin_4'), moved: Object.keys(window.__editor.moved), name: document.getElementById('i-name').textContent }));
+  ok('a mouse drag moves a space', sp1.moved.includes('fin_4') && Math.hypot(sp1.pos.x - sp0.x, sp1.pos.z - sp0.z) > 3, JSON.stringify(sp1));
+  await p.click('#i-reset');
+  const sp2 = await p.evaluate(() => ({ pos: window.__editor.nodePos('fin_4'), moved: Object.keys(window.__editor.moved) }));
+  ok('Put back returns the space', !sp2.moved.length && Math.hypot(sp2.pos.x - sp0.x, sp2.pos.z - sp0.z) < 1e-6, JSON.stringify(sp2));
+  await dragSpace();
+  await p.screenshot({ path: OUT + '/space.png' });
+
   // 3D view
   await p.click('#v-3d'); await p.waitForTimeout(1500);
   await p.screenshot({ path: OUT + '/3d.png' });
@@ -91,6 +109,8 @@ const ok = (n, c, d) => (c ? pass : fail).push(n + (d ? ' — ' + d : ''));
     await p.click('#b-save'); await p.fill('#m-note', 'test save'); await p.click('#m-save-go'); await p.waitForTimeout(800);
     const r6 = await p.evaluate(() => ({ keys: Object.keys(window.__store), main: window.__store['layouts/city_circuit'] && { n: window.__store['layouts/city_circuit'].items.length, note: window.__store['layouts/city_circuit'].note }, status: document.getElementById('status').textContent }));
     ok('Save for Claude writes the layout and a version', !!r6.main && r6.keys.length === 2 && r6.main.note === 'test save', JSON.stringify(r6));
+    const savedSpaces = await p.evaluate(() => window.__store['layouts/city_circuit'].spaces || {});
+    ok('the saved layout carries the moved space', !!savedSpaces.fin_4, JSON.stringify(savedSpaces));
     console.log('after save', JSON.stringify(r6));
     
   }

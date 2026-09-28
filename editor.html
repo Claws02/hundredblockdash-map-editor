@@ -76,6 +76,9 @@ button { font: inherit; color: inherit; }
 .val { min-width: 54px; text-align: center; font-weight: 800; font-variant-numeric: tabular-nums; }
 .num { width: 76px; min-height: 36px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
        font: 800 14px 'Nunito', sans-serif; text-align: center; font-variant-numeric: tabular-nums; }
+#inspector.space-mode #r-var, #inspector.space-mode .row-turn, #inspector.space-mode #i-dup, #inspector.space-mode #i-del,
+#inspector.space-mode .sz { display: none !important; }
+#inspector:not(.space-mode) #i-reset { display: none; }
 #warn { font-size: 13px; font-weight: 700; color: var(--bad); }
 #warn:empty { display: none; }
 #tools { right: 12px; top: 12px; display: grid; gap: 6px; padding: 6px; }
@@ -165,16 +168,17 @@ kbd { font: 800 11px 'Nunito', sans-serif; border: 1px solid var(--line); border
         <button class="btn" id="i-vnext" aria-label="Next variant">▶</button>
         <button class="btn" id="i-vrand">Random</button>
         <button class="chip" id="i-hq" aria-pressed="false">HQ</button></div>
-      <div class="row"><span class="lbl">Turn</span>
+      <div class="row row-turn"><span class="lbl">Turn</span>
         <button class="btn" id="i-l90">−90°</button><button class="btn" id="i-l15">−15°</button>
         <span class="val" id="i-rot">0°</span>
         <button class="btn" id="i-r15">+15°</button><button class="btn" id="i-r90">+90°</button></div>
-      <div class="row"><span class="lbl">Size</span>
-        <button class="btn" id="i-smaller" aria-label="Smaller">−</button><span class="val" id="i-scale">1.00</span>
-        <button class="btn" id="i-bigger" aria-label="Bigger">+</button>
+      <div class="row"><span class="lbl sz">Size</span>
+        <button class="btn sz" id="i-smaller" aria-label="Smaller">−</button><span class="val sz" id="i-scale">1.00</span>
+        <button class="btn sz" id="i-bigger" aria-label="Bigger">+</button>
         <span class="lbl" style="width:auto;margin-left:8px">X</span><input class="num" id="i-x" type="number" step="0.5" inputmode="decimal">
         <span class="lbl" style="width:auto">Z</span><input class="num" id="i-z" type="number" step="0.5" inputmode="decimal"></div>
       <div class="row"><button class="btn" id="i-dup">Duplicate</button><button class="btn danger" id="i-del">Delete</button>
+        <button class="btn" id="i-reset" title="Put the space back where the map puts it">Put back</button>
         <span id="warn"></span></div>
     </div>
     <div class="floating" id="toast" role="status" aria-live="polite"></div>
@@ -227,6 +231,7 @@ kbd { font: 800 11px 'Nunito', sans-serif; border: 1px solid var(--line); border
       <b>Look around</b><span>Drag empty ground to pan (orbit in 3D). Pinch to zoom.</span>
       <b>Change it</b><span>Variant, HQ, size and exact position are in the panel at the bottom.</span>
       <b>Red</b><span>The piece overlaps another, or stands on a space or the road. Overhead spans are meant to cross the road.</span>
+      <b>Spaces</b><span>Drag a space (the coloured hexagons) to move it; its district's road follows. Put back returns it to where the map puts it. What each space is (coin, duel…) is still dealt by the game.</span>
       <b>Layers</b><span>Hide kinds of pieces (props, overheads…) while you arrange the rest.</span>
       <b>Save</b><span><i>Save for Claude</i> stores the layout where Claude can read it. Your work is also kept on this device between saves.</span>
       <b>Keys</b><span><kbd>⌫</kbd> delete · <kbd>R</kbd> turn 15° · <kbd>D</kbd> duplicate · <kbd>⌘Z</kbd> undo · <kbd>⇧⌘Z</kbd> redo</span>
@@ -258,6 +263,7 @@ async function main() {
   let items = [];                  // { uid, model, seed, hq, x, z, rotY, scale }
   let uidSeq = 1;
   let selected = null;
+  let selSpace = null;                 // a selected space's id (spaces are not layout items)
   let mode = 'plan', snap = true, showKeep = true;
   const undoStack = [], redoStack = [];
   let saved = { savedAt: GAME_LAYOUT?.savedAt || null, json: '' };
@@ -294,28 +300,120 @@ async function main() {
   const shadowCatcher = new THREE.Mesh(new THREE.PlaneGeometry(REACH * 2, REACH * 2), new THREE.ShadowMaterial({ opacity: 0.28 }));
   shadowCatcher.rotation.x = -Math.PI / 2; shadowCatcher.position.y = -0.02; shadowCatcher.receiveShadow = true; scene.add(shadowCatcher);
 
-  // Keep-outs: every space, and a strip along every road's centre line.
+  // ---------- the board: spaces, district pavements, guide path, keep-outs ----------
+  // Everything here follows the spaces, so it is drawn from their current
+  // positions rather than baked into the floor image. A district with no
+  // moved space draws the game's own lobe; one with moved spaces draws
+  // CityKit.roadCurve through them, which is what the game lays too.
+  const ORIG = new Map(REF.nodes.map(n => [n.id, n]));
+  const SPACE_IDS = REF.nodes.filter(n => !n.junction).map(n => n.id);
+  let moved = {};                                   // id → [x, z]
+  const nodePos = id => { const m = moved[id], o = ORIG.get(id); return m ? { x: m[0], z: m[1] } : { x: o.x, z: o.z }; };
+  const movedClean = () => {
+    const out = {};
+    for (const id of SPACE_IDS) {
+      const m = moved[id], o = ORIG.get(id);
+      if (m && Math.hypot(m[0] - o.x, m[1] - o.z) > 1e-3) out[id] = [r3(m[0]), r3(m[1])];
+    }
+    return out;
+  };
+  const DIST_COL = {}; REF.runs.forEach(r => { DIST_COL[r.district] = r.color; });
+  const board = new THREE.Group(); scene.add(board);
   const keep = new THREE.Group(); scene.add(keep);
   const keepMat = new THREE.MeshBasicMaterial({ color: 0xff5a6e, transparent: true, opacity: 0.32, depthWrite: false });
   const roadMat = new THREE.MeshBasicMaterial({ color: 0xff5a6e, transparent: true, opacity: 0.16, depthWrite: false });
-  REF.spaces.forEach(s => {
-    const c = new THREE.Mesh(new THREE.CircleGeometry(SPACE_R, 28), keepMat);
-    c.rotation.x = -Math.PI / 2; c.position.set(s.x, 0.04, s.z); keep.add(c);
-  });
-  const roadPts = [];   // samples along every road, for the conflict test
-  REF.roads.forEach(rd => {
-    for (let i = 0; i < rd.pts.length - 1; i++) {
-      const [ax, az] = rd.pts[i], [bx, bz] = rd.pts[i + 1];
-      const len = Math.hypot(bx - ax, bz - az);
-      if (len < 0.01) continue;
-      // Laid flat with its length along +Z, then turned to run along the segment.
-      const strip = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_HALF * 2, len).rotateX(-Math.PI / 2), roadMat);
-      strip.rotation.y = Math.atan2(bx - ax, bz - az);
-      strip.position.set((ax + bx) / 2, 0.03, (az + bz) / 2);
-      keep.add(strip);
-      for (let t = 0; t <= len; t += 0.8) roadPts.push({ x: ax + (bx - ax) * t / len, z: az + (bz - az) * t / len });
+  const pathMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, depthWrite: false });
+  const asphaltMat = new THREE.MeshBasicMaterial({ color: 0x3a3a3a });
+  const paveMats = {};
+  const paveMat = d => paveMats[d] || (paveMats[d] = new THREE.MeshBasicMaterial({ color: new THREE.Color(DIST_COL[d] || '#b0a898') }));
+  const markerMats = {};
+  const markerMat = (d, state) => {
+    const k = d + ':' + state;
+    if (!markerMats[k]) {
+      const c = state === 'sel' ? new THREE.Color(0xf5b301) : state === 'bad' ? new THREE.Color(0xff5a6e)
+              : new THREE.Color(DIST_COL[d] || '#9aa3ad').lerp(new THREE.Color(0xffffff), 0.45);
+      markerMats[k] = new THREE.MeshBasicMaterial({ color: c, depthTest: false });
     }
-  });
+    return markerMats[k];
+  };
+  const rimMat = new THREE.MeshBasicMaterial({ color: 0x120a22, depthTest: false });
+  function ribbonGeo(pts, width, y) {
+    const half = width / 2, pos = [], idx = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
+      const tx = b.x - a.x, tz = b.z - a.z, len = Math.hypot(tx, tz) || 1;
+      const nx = -tz / len * half, nz = tx / len * half;
+      pos.push(pts[i].x + nx, y, pts[i].z + nz, pts[i].x - nx, y, pts[i].z - nz);
+      if (i < pts.length - 1) { const k = i * 2; idx.push(k, k + 2, k + 1, k + 1, k + 2, k + 3); }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx);
+    return g;
+  }
+  let roadPts = [];                                  // samples along every road, for the conflict test
+  const spaceMarks = new Map();                      // id → marker mesh
+  let spaceBad = new Map();                          // id → [reasons]
+  function rebuildBoard() {
+    for (const grp of [board, keep]) while (grp.children.length) { const c = grp.children.pop(); c.geometry && c.geometry.dispose(); }
+    spaceMarks.clear();
+    const xz = id => { const p = nodePos(id); return [p.x, p.z]; };
+    // District pavements.
+    REF.runs.forEach(run => {
+      const anyMoved = run.ids.some(id => moved[id]);
+      const pts = anyMoved ? roadCurve([run.end0, ...run.ids.map(xz), run.end1], 56).map(v => ({ x: v.x, z: v.z }))
+                           : run.samples.map(([x, z]) => ({ x, z }));
+      const m = new THREE.Mesh(ribbonGeo(pts, run.width, 0.0), paveMat(run.district)); m.renderOrder = -1; board.add(m);
+    });
+    // Ring stretches with moved spaces get asphalt along them, as in the game.
+    REF.roads.filter(r => r.district === REF.hub && r.ids.some(id => moved[id])).forEach(r => {
+      const pts = roadCurve(r.ids.map(xz), r.ids.length * 8).map(v => ({ x: v.x, z: v.z }));
+      const m = new THREE.Mesh(ribbonGeo(pts, 10, 0.01), asphaltMat); m.renderOrder = -1; board.add(m);
+    });
+    // Guide path, keep-out strips and the conflict samples, road by road.
+    roadPts = [];
+    REF.roads.forEach(rd => {
+      const pts = rd.ids.map(nodePos);
+      board.add(new THREE.Mesh(ribbonGeo(pts, 0.9, 0.02), pathMat));
+      for (let i = 0; i < pts.length - 1; i++) {
+        const A = pts[i], B = pts[i + 1], len = Math.hypot(B.x - A.x, B.z - A.z);
+        if (len < 0.01) continue;
+        const strip = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_HALF * 2, len).rotateX(-Math.PI / 2), roadMat);
+        strip.rotation.y = Math.atan2(B.x - A.x, B.z - A.z);
+        strip.position.set((A.x + B.x) / 2, 0.03, (A.z + B.z) / 2);
+        keep.add(strip);
+        for (let t = 0; t <= len; t += 0.8) roadPts.push({ x: A.x + (B.x - A.x) * t / len, z: A.z + (B.z - A.z) * t / len });
+      }
+    });
+    // Spaces: a keep-out disc, and a hex marker you can pick up.
+    SPACE_IDS.forEach(id => {
+      const p = nodePos(id), d = ORIG.get(id).district;
+      const c = new THREE.Mesh(new THREE.CircleGeometry(SPACE_R, 28), keepMat);
+      c.rotation.x = -Math.PI / 2; c.position.set(p.x, 0.04, p.z); keep.add(c);
+      const rim = new THREE.Mesh(new THREE.CircleGeometry(REF.spaceR + 0.55, 6).rotateX(-Math.PI / 2), rimMat);
+      rim.position.set(p.x, 0.1, p.z); rim.renderOrder = 6; board.add(rim);
+      const mk = new THREE.Mesh(new THREE.CircleGeometry(REF.spaceR + 0.2, 6).rotateX(-Math.PI / 2), markerMat(d, 'ok'));
+      mk.position.set(p.x, 0.11, p.z); mk.renderOrder = 7; mk.userData.spaceId = id; board.add(mk);
+      spaceMarks.set(id, mk);
+    });
+    applySpaceLayer(); paintSpaces(); requestRender();
+  }
+  function applySpaceLayer() { spaceMarks.forEach(m => { m.visible = !hiddenCats.has('space'); }); }
+  function checkSpaces() {
+    spaceBad = new Map();
+    const min = REF.spaceR * 2 + 0.6;
+    for (let i = 0; i < SPACE_IDS.length; i++) for (let j = i + 1; j < SPACE_IDS.length; j++) {
+      const a = nodePos(SPACE_IDS[i]), b = nodePos(SPACE_IDS[j]);
+      if (Math.hypot(a.x - b.x, a.z - b.z) < min) {
+        (spaceBad.get(SPACE_IDS[i]) || spaceBad.set(SPACE_IDS[i], []).get(SPACE_IDS[i])).push('is too close to ' + SPACE_IDS[j]);
+        (spaceBad.get(SPACE_IDS[j]) || spaceBad.set(SPACE_IDS[j], []).get(SPACE_IDS[j])).push('is too close to ' + SPACE_IDS[i]);
+      }
+    }
+  }
+  function paintSpaces() {
+    spaceMarks.forEach((m, id) => { m.material = markerMat(ORIG.get(id).district, id === selSpace ? 'sel' : spaceBad.has(id) ? 'bad' : 'ok'); });
+  }
+  let boardQueued = false;
+  function liveBoard() { if (boardQueued) return; boardQueued = true; requestAnimationFrame(() => { boardQueued = false; rebuildBoard(); checkConflicts(); }); }
 
   // ---------- cameras ----------
   const plan = { cx: 0, cz: 0, half: 95, ang: 0 };
@@ -436,16 +534,17 @@ async function main() {
   }
   function renderLayers() {
     const box = $('layer-list'); box.innerHTML = '';
-    CATS.forEach(([cat, label]) => {
-      const n = items.filter(i => catOf(i.model) === cat).length;
+    [...CATS, ['space', 'Spaces']].forEach(([cat, label]) => {
+      const n = cat === 'space' ? SPACE_IDS.length : items.filter(i => catOf(i.model) === cat).length;
       const b = document.createElement('button'); b.type = 'button'; b.className = 'tab';
       b.textContent = `${label} (${n})`; b.setAttribute('aria-pressed', String(!hiddenCats.has(cat)));
       b.onclick = () => {
         hiddenCats.has(cat) ? hiddenCats.delete(cat) : hiddenCats.add(cat);
-        items.forEach(applyLayer);
+        items.forEach(applyLayer); applySpaceLayer();
+        if (selSpace && hiddenCats.has('space')) selectSpace(null);
         if (selected && hiddenCats.has(catOf(itemBy(selected)?.model))) select(null);
         renderLayers(); paintOutlines(); requestRender();
-        $('b-layers').textContent = hiddenCats.size ? `Layers (${CATS.length - hiddenCats.size}/${CATS.length})` : 'Layers';
+        $('b-layers').textContent = hiddenCats.size ? `Layers (${CATS.length + 1 - hiddenCats.size}/${CATS.length + 1})` : 'Layers';
       };
       box.appendChild(b);
     });
@@ -495,14 +594,15 @@ async function main() {
     }
     for (const A of info) {
       if (!MODELS[A.it.model].spansRoad) {
-      if (REF.spaces.some(s => Math.hypot(s.x - A.it.x, s.z - A.it.z) < A.R + SPACE_R && circleHits(A.it, s.x, s.z, SPACE_R))) A.list.push('stands on a space');
+      if (SPACE_IDS.some(id => { const s = nodePos(id); return Math.hypot(s.x - A.it.x, s.z - A.it.z) < A.R + SPACE_R && circleHits(A.it, s.x, s.z, SPACE_R); })) A.list.push('stands on a space');
       if (roadPts.some(p => Math.hypot(p.x - A.it.x, p.z - A.it.z) < A.R + ROAD_HALF && circleHits(A.it, p.x, p.z, ROAD_HALF))) A.list.push('stands on the road');
       }
       if (Math.hypot(A.it.x, A.it.z) > REACH - 2) A.list.push('is off the edge of the board');
       const o = objs.get(A.it.uid); o.conflicts = [...new Set(A.list)];
     }
+    checkSpaces(); paintSpaces();
     paintOutlines();
-    const n = info.filter(a => objs.get(a.it.uid).conflicts.length).length;
+    const n = info.filter(a => objs.get(a.it.uid).conflicts.length).length + spaceBad.size;
     const b = $('b-conf');
     b.textContent = n ? `${n} to fix` : 'No conflicts';
     b.classList.toggle('bad', !!n); b.classList.toggle('good', !n);
@@ -524,22 +624,24 @@ async function main() {
   }
 
   // ---------- history, draft, dirty ----------
-  function snapshot() { return JSON.stringify(strip(items)); }
+  function snapshot() { return JSON.stringify({ items: strip(items), spaces: movedClean() }); }
+  function restore(str) { const st = JSON.parse(str); moved = { ...(st.spaces || {}) }; loadItems(st.items || []); }
   function checkpoint() { undoStack.push(snapshot()); if (undoStack.length > 120) undoStack.shift(); redoStack.length = 0; syncButtons(); }
   function loadItems(list, keepSel) {
     items = withUids(list);
-    if (!keepSel) selected = null;
+    if (!keepSel) { selected = null; selSpace = null; }
+    rebuildBoard();
     rebuildAll();
   }
-  function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); loadItems(JSON.parse(undoStack.pop())); changed(); }
-  function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); loadItems(JSON.parse(redoStack.pop())); changed(); }
+  function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); changed(); }
+  function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); restore(redoStack.pop()); changed(); }
   function syncButtons() { $('b-undo').disabled = !undoStack.length; $('b-redo').disabled = !redoStack.length; }
   let draftTimer = 0;
   function changed() {
     syncButtons(); updateStatus();
     clearTimeout(draftTimer);
     draftTimer = setTimeout(() => {
-      try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ basedOn: saved.savedAt, items: strip(items), at: Date.now() })); } catch (e) {}
+      try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ basedOn: saved.savedAt, items: strip(items), spaces: movedClean(), at: Date.now() })); } catch (e) {}
     }, 400);
   }
   function updateStatus(text) {
@@ -559,10 +661,25 @@ async function main() {
 
   // ---------- selection & inspector ----------
   const TURN = 15 * Math.PI / 180;
-  function select(uid) { selected = uid; refreshSelection(); }
+  function select(uid) { selected = uid; if (uid !== null) selSpace = null; refreshSelection(); paintSpaces(); requestRender(); }
+  function selectSpace(id) { selSpace = id; selected = null; refreshSelection(); paintSpaces(); requestRender(); }
   function refreshSelection() {
     const it = selected && itemBy(selected);
     if (!it) selected = null;
+    const sp = !it && selSpace;
+    $('inspector').classList.toggle('space-mode', !!sp);
+    if (sp) {
+      const p = nodePos(sp), d = ORIG.get(sp).district;
+      $('inspector').hidden = false; knob.visible = stem.visible = false;
+      $('i-name').textContent = 'Space ' + sp;
+      $('i-ds').textContent = ((REF.runs.find(r => r.district === d) ? d : 'ring') === REF.hub ? 'Ring Road' : ({ fin: 'Financial District', ba: 'Back Alley', shop: 'Shopping Promenade', ind: 'Industrial Zone' }[d] || d)) + ' · space';
+      if (document.activeElement !== $('i-x')) $('i-x').value = p.x.toFixed(1);
+      if (document.activeElement !== $('i-z')) $('i-z').value = p.z.toFixed(1);
+      $('i-reset').disabled = !moved[sp];
+      $('warn').textContent = spaceBad.has(sp) ? 'This space ' + spaceBad.get(sp).join(', ') + '.' : '';
+      paintOutlines();
+      return;
+    }
     $('inspector').hidden = !it;
     knob.visible = stem.visible = !!it;
     if (it) {
@@ -600,11 +717,20 @@ async function main() {
   $('i-r15').onclick = () => turn(TURN); $('i-r90').onclick = () => turn(Math.PI / 2);
   $('i-smaller').onclick = () => edit(it => { it.scale = Math.max(0.6, r3(it.scale - 0.05)); });
   $('i-bigger').onclick = () => edit(it => { it.scale = Math.min(1.6, r3(it.scale + 0.05)); });
-  const typed = key => () => { const v = parseFloat($('i-' + key).value); if (Number.isFinite(v)) edit(it => { it[key] = Math.max(-REACH, Math.min(REACH, v)); }); };
+  const typed = key => () => {
+    const v = parseFloat($('i-' + key).value); if (!Number.isFinite(v)) return;
+    if (selSpace) {
+      checkpoint(); const p = nodePos(selSpace); const c = Math.max(-REACH, Math.min(REACH, v));
+      moved[selSpace] = key === 'x' ? [c, p.z] : [p.x, c];
+      rebuildBoard(); checkConflicts(); refreshSelection(); changed(); return;
+    }
+    edit(it => { it[key] = Math.max(-REACH, Math.min(REACH, v)); });
+  };
+  $('i-reset').onclick = () => { if (!selSpace || !moved[selSpace]) return; checkpoint(); delete moved[selSpace]; rebuildBoard(); checkConflicts(); refreshSelection(); changed(); };
   $('i-x').onchange = typed('x'); $('i-z').onchange = typed('z');
   $('i-dup').onclick = duplicate;
   $('i-del').onclick = remove;
-  $('i-close').onclick = () => select(null);
+  $('i-close').onclick = () => { select(null); selectSpace(null); };
   function duplicate() {
     const it = selected && itemBy(selected); if (!it) return;
     checkpoint();
@@ -620,10 +746,11 @@ async function main() {
   }
   let confCursor = 0;
   $('b-conf').onclick = () => {
-    const bad = items.filter(it => objs.get(it.uid)?.conflicts.length);
+    const bad = items.filter(it => objs.get(it.uid)?.conflicts.length).map(it => ({ it }))
+      .concat([...spaceBad.keys()].map(id => ({ id })));
     if (!bad.length) { toast('Nothing overlaps and nothing stands in the way.'); return; }
-    const it = bad[confCursor++ % bad.length];
-    select(it.uid); centreOn(it);
+    const b = bad[confCursor++ % bad.length];
+    if (b.it) { select(b.it.uid); centreOn(b.it); } else { selectSpace(b.id); centreOn(nodePos(b.id)); }
   };
   function centreOn(it) {
     if (mode === 'plan') { plan.cx = it.x; plan.cz = it.z; plan.half = Math.min(plan.half, 40); }
@@ -660,6 +787,13 @@ async function main() {
     }
     return best;
   }
+  function pickSpace(x, y) {
+    if (hiddenCats.has('space')) return null;
+    const g = groundAt(x, y); if (!g) return null;
+    let best = null, bd = REF.spaceR + 0.8;
+    for (const id of SPACE_IDS) { const p = nodePos(id), d = Math.hypot(p.x - g.x, p.z - g.z); if (d < bd) { bd = d; best = id; } }
+    return best;
+  }
   function knobHit(x, y) {
     if (!knob.visible) return false;
     const g = groundAt(x, y); if (!g) return false;
@@ -680,6 +814,13 @@ async function main() {
     if (pointers.size === 1) {
       const base = { sx: e.clientX, sy: e.clientY, moved: false, t0: performance.now(), cam: camState() };
       if (knobHit(e.clientX, e.clientY)) { gesture = { ...base, type: 'rotate', uid: selected }; return; }
+      const sid = pickSpace(e.clientX, e.clientY);
+      if (sid) {
+        const p = nodePos(sid), g = groundAt(e.clientX, e.clientY);
+        selectSpace(sid);
+        gesture = { ...base, type: 'moveSpace', sid, ox: p.x - (g ? g.x : p.x), oz: p.z - (g ? g.z : p.z) };
+        return;
+      }
       const uid = pick(e.clientX, e.clientY);
       if (uid !== null) {
         const it = itemBy(uid), g = groundAt(e.clientX, e.clientY);
@@ -689,7 +830,7 @@ async function main() {
         gesture = { ...base, type: mode === 'plan' ? 'pan' : 'orbit', g0: groundAt(e.clientX, e.clientY) };
       }
     } else if (pointers.size === 2) {
-      if (gesture && (gesture.type === 'move' || gesture.type === 'rotate') && gesture.moved) finishEdit();
+      if (gesture && (gesture.type === 'move' || gesture.type === 'rotate' || gesture.type === 'moveSpace') && gesture.moved) finishEdit();
       const p = pinchInfo();
       gesture = { type: 'pinch', d0: p.d, cam: camState(), g0: groundAt(p.mx, p.my) };
     }
@@ -714,9 +855,13 @@ async function main() {
     }
     const dx = e.clientX - gesture.sx, dy = e.clientY - gesture.sy;
     if (!gesture.moved && Math.hypot(dx, dy) < 6) return;
-    if (!gesture.moved) { gesture.moved = true; if (gesture.type === 'move' || gesture.type === 'rotate') checkpoint(); }
+    if (!gesture.moved) { gesture.moved = true; if (gesture.type === 'move' || gesture.type === 'rotate' || gesture.type === 'moveSpace') checkpoint(); }
     const it = gesture.uid && itemBy(gesture.uid);
-    if (gesture.type === 'move' && it) {
+    if (gesture.type === 'moveSpace') {
+      const g = groundAt(e.clientX, e.clientY); if (!g) return;
+      moved[gesture.sid] = [Math.max(-REACH, Math.min(REACH, snapPos(g.x + gesture.ox))), Math.max(-REACH, Math.min(REACH, snapPos(g.z + gesture.oz)))];
+      liveBoard(); refreshSelection();
+    } else if (gesture.type === 'move' && it) {
       const g = groundAt(e.clientX, e.clientY); if (!g) return;
       it.x = Math.max(-REACH, Math.min(REACH, snapPos(g.x + gesture.ox)));
       it.z = Math.max(-REACH, Math.min(REACH, snapPos(g.z + gesture.oz)));
@@ -742,8 +887,8 @@ async function main() {
     pointers.delete(e.pointerId);
     if (!gesture) return;
     if (gesture.type === 'pinch') { if (pointers.size === 0) gesture = null; return; }
-    if ((gesture.type === 'move' || gesture.type === 'rotate') && gesture.moved) finishEdit();
-    if ((gesture.type === 'pan' || gesture.type === 'orbit') && !gesture.moved) select(null);   // a tap on empty ground
+    if ((gesture.type === 'move' || gesture.type === 'rotate' || gesture.type === 'moveSpace') && gesture.moved) finishEdit();
+    if ((gesture.type === 'pan' || gesture.type === 'orbit') && !gesture.moved) { select(null); selectSpace(null); }   // a tap on empty ground
     if (pointers.size === 0) gesture = null;
   }
   canvas.addEventListener('pointerup', endPointer);
@@ -860,7 +1005,7 @@ async function main() {
   function layoutDoc(note) {
     const list = strip(items);
     return { map: MAP, version: 2, savedAt: new Date().toISOString(), note: (note || '').slice(0, 300), itemCount: list.length,
-             items: list, editor: BUILD_INFO ? BUILD_INFO.commit : '' };
+             items: list, spaces: movedClean(), editor: BUILD_INFO ? BUILD_INFO.commit : '' };
   }
   function openModal(id) { $(id).hidden = false; }
   document.querySelectorAll('.modal').forEach(m => {
@@ -875,7 +1020,7 @@ async function main() {
     $('m-save-go').disabled = true; updateStatus('Saving…');
     try {
       await db.doc(DOC).set(doc);
-      saved = { savedAt: doc.savedAt, json: JSON.stringify(doc.items) };
+      saved = { savedAt: doc.savedAt, json: JSON.stringify({ items: doc.items, spaces: doc.spaces }) };
       $('m-save').hidden = true;
       toast('Saved. Tell Claude to pull the city layout.');
       try {
@@ -883,7 +1028,7 @@ async function main() {
         const all = await db.collection(DOC + '/versions').orderBy('savedAt', 'desc').get();
         for (const d of all.docs.slice(30)) await db.doc(DOC + '/versions/' + d.id).delete();
       } catch (e) { /* the main save stands; a missed history entry is not worth an error */ }
-      try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ basedOn: saved.savedAt, items: doc.items, at: Date.now() })); } catch (e) {}
+      try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ basedOn: saved.savedAt, items: doc.items, spaces: doc.spaces, at: Date.now() })); } catch (e) {}
     } catch (e) {
       toast(e && e.code === 'invalid_argument' ? 'You can look at this map but not save it. Ask the owner for edit access.' : 'The save didn’t go through. Check your connection and try again.');
     } finally { $('m-save-go').disabled = false; updateStatus(); }
@@ -892,7 +1037,7 @@ async function main() {
   $('mm-help').onclick = () => { $('m-menu').hidden = true; openModal('m-help'); };
   $('mm-reset').onclick = () => {
     $('m-menu').hidden = true;
-    checkpoint(); loadItems(GAME_LAYOUT.items); changed(); toast('Loaded the layout the game uses now. Undo to go back.');
+    checkpoint(); moved = { ...(GAME_LAYOUT.spaces || {}) }; loadItems(GAME_LAYOUT.items); changed(); toast('Loaded the layout the game uses now. Undo to go back.');
   };
   $('mm-export').onclick = async () => {
     const text = JSON.stringify(layoutDoc('Downloaded from the map editor'), null, 1);
@@ -922,7 +1067,7 @@ async function main() {
         const s = document.createElement('span'); s.textContent = v.note || 'No note';
         txt.append(b, s);
         const open = document.createElement('button'); open.className = 'btn'; open.textContent = 'Open';
-        open.onclick = () => { checkpoint(); loadItems(upgrade(v.items || []).list); changed(); $('m-versions').hidden = true; toast('Opened that version. Undo to go back.'); };
+        open.onclick = () => { checkpoint(); moved = { ...(v.spaces || {}) }; loadItems(upgrade(v.items || []).list); changed(); $('m-versions').hidden = true; toast('Opened that version. Undo to go back.'); };
         row.append(txt, open); list.appendChild(row);
       });
     } catch (e) { list.innerHTML = '<p>Couldn’t load the saved versions. Try again in a moment.</p>'; }
@@ -938,7 +1083,8 @@ async function main() {
     try { const snap = await db.doc(DOC).get(); if (snap.exists) base = snap.data(); }
     catch (e) { toast('Couldn’t read the saved layout; showing the game’s.'); }
   }
-  saved = { savedAt: base === GAME_LAYOUT ? null : base.savedAt, json: JSON.stringify(strip(base.items || [])) };
+  saved = { savedAt: base === GAME_LAYOUT ? null : base.savedAt, json: JSON.stringify({ items: strip(base.items || []), spaces: base.spaces || {} }) };
+  moved = { ...(base.spaces || {}) };
   // A layout saved before the street pieces were editable holds only the
   // buildings; the street pieces come from the game's layout so saving it
   // can never drop them.
@@ -950,8 +1096,8 @@ async function main() {
   let start = base.items || [];
   try {
     const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null');
-    if (d && Array.isArray(d.items) && d.basedOn === saved.savedAt && JSON.stringify(d.items) !== saved.json) {
-      start = d.items; setTimeout(() => toast('Restored your unsaved changes from last time.'), 400);
+    if (d && Array.isArray(d.items) && d.basedOn === saved.savedAt && JSON.stringify({ items: d.items, spaces: d.spaces || {} }) !== saved.json) {
+      start = d.items; moved = { ...(d.spaces || {}) }; setTimeout(() => toast('Restored your unsaved changes from last time.'), 400);
     }
   } catch (e) {}
   const up = upgrade(start);
@@ -961,7 +1107,7 @@ async function main() {
   $('loading').remove();
   try { if (!localStorage.getItem('hbd-map-editor-seen-help')) { localStorage.setItem('hbd-map-editor-seen-help', '1'); openModal('m-help'); } } catch (e) {}
   setTimeout(makeThumbs, 200);
-  window.__editor = { get items() { return items; }, objs, select, setMode, checkConflicts, get db() { return db; } };   // for QA
+  window.__editor = { get items() { return items; }, objs, select, selectSpace, setMode, checkConflicts, get moved() { return moved; }, nodePos, get db() { return db; } };   // for QA
 }
 main().catch(e => {
   const l = document.getElementById('loading');

@@ -27,6 +27,7 @@ game/src/engine/CityKit.js ──(verbatim, at build)──► editor page ─�
 - **Turn:** drag the gold handle. The handle marks the front, which should face the road.
 - **Look around:** pinch to zoom, and drag empty ground to pan (orbit in 3D). Plan and 3D views are at the top.
 - **Adjust:** the panel at the bottom holds variant, HQ, size and exact position, plus Duplicate and Delete.
+- **Spaces** (the coloured hexagons) can be dragged too. The district's road and pavement follow, **Put back** returns a space to where the map puts it, and spaces packed too close together turn red. What each space *is* (coin, duel and so on) is still dealt by the game each match.
 - **Layers** hides whole kinds of pieces (props, overheads and so on) while you arrange the rest.
 - **Red** means the piece overlaps another one, or stands on a space (within about 3.1 units of its centre) or on the road (within 3 units of its centre line). The "N to fix" button walks through them.
 - **Undo and redo** are there, and your work is kept on the device between saves.
@@ -48,7 +49,7 @@ npm run export-ref     # re-capture ref/ from the game, when spaces, roads or gr
 | `editor.html` | The editor's source: markup, styles and code, with markers the build fills |
 | `scripts/build.js` | Inlines `game/src/engine/CityKit.js`, `ref/`, the game's current layout and the game commit into one page |
 | `scripts/export-reference.js` | Serves `game/`, boots City Circuit, and writes `ref/city_circuit.json` (spaces, roads) and a straight-down ground image |
-| `ref/` | The board as the editor draws it underneath |
+| `ref/` | The board underneath: the ground that never moves (image), and the spaces, roads and district runs the editor draws itself (JSON) |
 | `test/editor.test.js` | Drives the built page in Chromium, framed the way claude.ai frames it, against an in-memory store |
 
 ## Keeping in step with the game
@@ -66,5 +67,4 @@ Then republish `dist/city-map-editor.html` to the editor's URL; saved layouts an
 ## Not in this version
 
 - The traffic (moving cars and people) is fixed.
-- Spaces and roads are fixed. Moving them changes gameplay geometry.
 - City Circuit only. Hundred Block Dash can follow once its realm landmarks move into the model kit.

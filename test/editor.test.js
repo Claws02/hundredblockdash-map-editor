@@ -101,6 +101,21 @@ const ok = (n, c, d) => (c ? pass : fail).push(n + (d ? ' — ' + d : ''));
   await dragSpace();
   await p.screenshot({ path: OUT + '/space.png' });
 
+  // District look: open the panel, pick the Back Alley, move the lamp slider.
+  await p.click('#b-look');
+  await p.evaluate(() => [...document.querySelectorAll('#lk-tabs .tab')].find(b => b.textContent === 'Back Alley').click());
+  const lk0 = await p.evaluate(() => document.querySelector('#lk-rows input[aria-label="Lamp amount"]').value);
+  await p.evaluate(() => { const sl = document.querySelector('#lk-rows input[aria-label="Lamp amount"]');
+    for (const v of [2, 2.5, 3]) { sl.value = v; sl.dispatchEvent(new Event('input')); } sl.dispatchEvent(new Event('change')); });
+  const lk1 = await p.evaluate(() => ({ glow: document.getElementById('lk-glow').style.opacity, undo: !document.getElementById('b-undo').disabled }));
+  await p.screenshot({ path: OUT + '/look.png' });
+  ok('a look slider restyles the district', +lk1.glow > 0.9 && lk1.undo, JSON.stringify({ before: lk0, ...lk1 }));
+  await p.click('#b-undo');
+  const lk2 = await p.evaluate(() => document.querySelector('#lk-rows input[aria-label="Lamp amount"]').value);
+  ok('one undo reverts the whole slider move', lk2 === lk0, `${lk0} → ${lk2}`);
+  await p.click('#b-redo');
+  await p.click('#lk-close');
+
   // 3D view
   await p.click('#v-3d'); await p.waitForTimeout(1500);
   await p.screenshot({ path: OUT + '/3d.png' });
@@ -111,6 +126,8 @@ const ok = (n, c, d) => (c ? pass : fail).push(n + (d ? ' — ' + d : ''));
     ok('Save for Claude writes the layout and a version', !!r6.main && r6.keys.length === 2 && r6.main.note === 'test save', JSON.stringify(r6));
     const savedSpaces = await p.evaluate(() => window.__store['layouts/city_circuit'].spaces || {});
     ok('the saved layout carries the moved space', !!savedSpaces.fin_4, JSON.stringify(savedSpaces));
+    const savedLooks = await p.evaluate(() => window.__store['layouts/city_circuit'].looks || {});
+    ok('the saved layout carries only the changed look', JSON.stringify(savedLooks) === JSON.stringify({ ba: { light: { intensity: 3 } } }), JSON.stringify(savedLooks));
     console.log('after save', JSON.stringify(r6));
     
   }

@@ -28,6 +28,7 @@ game/src/engine/CityKit.js ──(verbatim, at build)──► editor page ─�
 - **Look around:** pinch to zoom, and drag empty ground to pan (orbit in 3D). Plan and 3D views are at the top.
 - **Adjust:** the panel at the bottom holds variant, HQ, size and exact position, plus Duplicate and Delete.
 - **Spaces** (the coloured hexagons) can be dragged too. The district's road and pavement follow, **Put back** returns a space to where the map puts it, and spaces packed too close together turn red. What each space *is* (coin, duel and so on) is still dealt by the game each match.
+- **Look** restyles a district: sky, haze, pavement, paving slabs and seams, the district lamp and bounce light, and the drifting particles. The board shows ground and light changes as you make them; the panel's preview card shows the sky and particles. **Reset this district** returns it to the game's own look.
 - **Layers** hides whole kinds of pieces (props, overheads and so on) while you arrange the rest.
 - **Red** means the piece overlaps another one, or stands on a space (within about 3.1 units of its centre) or on the road (within 3 units of its centre line). The "N to fix" button walks through them.
 - **Undo and redo** are there, and your work is kept on the device between saves.

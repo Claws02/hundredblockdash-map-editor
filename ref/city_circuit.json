@@ -1593,5 +1593,117 @@
    ]
   }
  ],
- "hub": "ring"
+ "hub": "ring",
+ "looks": {
+  "fin": {
+   "name": "Financial District",
+   "bgTop": "#3f7fbe",
+   "bgBot": "#8ec4e8",
+   "fog": "#a7cbe8",
+   "pave": "#5c6470",
+   "slab": "#3c4250",
+   "seam": "#a9b6c8",
+   "light": {
+    "color": "#9fd0ff",
+    "intensity": 0.8,
+    "bounce": "#ffc65c",
+    "bounceI": 0.7,
+    "height": 22,
+    "radius": 66
+   },
+   "motes": {
+    "color": "#ffd782",
+    "count": 26,
+    "rise": 0.35,
+    "size": 0.22
+   }
+  },
+  "ba": {
+   "name": "Back Alley",
+   "bgTop": "#150e1e",
+   "bgBot": "#33223f",
+   "fog": "#4c3350",
+   "pave": "#463c33",
+   "slab": "#22252b",
+   "seam": "#4d5460",
+   "light": {
+    "color": "#ff4fa3",
+    "intensity": 1.6,
+    "bounce": "#35e0ff",
+    "bounceI": 1.1,
+    "height": 13,
+    "radius": 52
+   },
+   "motes": {
+    "color": "#ff9a4d",
+    "count": 34,
+    "rise": 1.5,
+    "size": 0.14
+   }
+  },
+  "shop": {
+   "name": "Shopping Promenade",
+   "bgTop": "#a06ad0",
+   "bgBot": "#e3bdf2",
+   "fog": "#e6c9f2",
+   "pave": "#6b5563",
+   "slab": "#6f5f88",
+   "seam": "#d8c4ea",
+   "light": {
+    "color": "#ffd9f0",
+    "intensity": 0.7,
+    "bounce": "#ffe08a",
+    "bounceI": 0.6,
+    "height": 20,
+    "radius": 60
+   },
+   "motes": {
+    "color": "#ffffff",
+    "count": 40,
+    "rise": -0.5,
+    "size": 0.16
+   }
+  },
+  "ind": {
+   "name": "Industrial Zone",
+   "bgTop": "#33220e",
+   "bgBot": "#8a5a20",
+   "fog": "#a8763a",
+   "pave": "#565139",
+   "slab": "#6f6a5e",
+   "seam": "#d9b23a",
+   "light": {
+    "color": "#ff9a3c",
+    "intensity": 1.3,
+    "bounce": "#ffd08a",
+    "bounceI": 0.6,
+    "height": 17,
+    "radius": 46
+   },
+   "motes": {
+    "color": "#ff7a1a",
+    "count": 30,
+    "rise": 2.2,
+    "size": 0.13
+   }
+  },
+  "ring": {
+   "name": "City Ring Road",
+   "bgTop": "#63a6de",
+   "bgBot": "#a9d4f2",
+   "fog": "#bfe0f5",
+   "pave": null,
+   "slab": null,
+   "seam": null,
+   "light": {
+    "color": "#fff3dd",
+    "intensity": 0,
+    "bounce": null,
+    "bounceI": 0,
+    "height": 26,
+    "radius": 60
+   },
+   "motes": null
+  }
+ }
 }

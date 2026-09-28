@@ -81,6 +81,20 @@ button { font: inherit; color: inherit; }
 #inspector:not(.space-mode) #i-reset { display: none; }
 #warn { font-size: 13px; font-weight: 700; color: var(--bad); }
 #warn:empty { display: none; }
+#lookpanel { right: 12px; top: 12px; bottom: 12px; width: min(360px, calc(100% - 24px)); padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; z-index: 3; }
+#lookpanel[hidden] { display: none; }
+.lk-preview { position: relative; height: 120px; border-radius: 10px; overflow: hidden; flex: none; border: 1px solid var(--line); }
+.lk-glow { position: absolute; left: 50%; top: 58%; width: 120px; height: 120px; margin: -60px; border-radius: 50%; filter: blur(18px); opacity: .7; }
+.lk-motes { position: absolute; inset: 0; }
+.lk-motes i { position: absolute; border-radius: 50%; }
+.lk-ground { position: absolute; left: 0; right: 0; bottom: 0; height: 26px; display: flex; }
+.lk-ground b { flex: 1; }
+.lk-rows { display: grid; gap: 8px; }
+.lk-row { display: grid; grid-template-columns: 84px 44px 1fr 44px; align-items: center; gap: 8px; font-size: 12px; font-weight: 800; color: var(--dim); }
+.lk-row input[type=color] { width: 44px; height: 34px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 2px; }
+.lk-row input[type=range] { width: 100%; accent-color: #f5b301; }
+.lk-row .v { font-variant-numeric: tabular-nums; color: var(--ink); text-align: right; }
+.lk-sec { font: 400 16px 'Bebas Neue', sans-serif; letter-spacing: .06em; color: var(--ink); margin-top: 4px; }
 #tools { right: 12px; top: 12px; display: grid; gap: 6px; padding: 6px; }
 #toast { left: 50%; top: 14px; transform: translateX(-50%); padding: 10px 16px; font-weight: 800; font-size: 13px; pointer-events: none;
          transition: opacity .2s; opacity: 0; max-width: calc(100% - 24px); text-align: center; }
@@ -131,6 +145,7 @@ kbd { font: 800 11px 'Nunito', sans-serif; border: 1px solid var(--line); border
     <button class="chip" id="b-snap" aria-pressed="true" title="Snap moves to half a unit and turns to 15°">Snap</button>
     <button class="chip" id="b-keep" aria-pressed="true" title="Show where buildings must not stand">Keep-outs</button>
     <button class="chip" id="b-layers" title="Show or hide kinds of pieces">Layers</button>
+    <button class="chip" id="b-look" aria-pressed="false" title="Each district's sky, ground, light and particles">Look</button>
     <button class="btn" id="b-undo" disabled title="Undo" aria-label="Undo">↶</button>
     <button class="btn" id="b-redo" disabled title="Redo" aria-label="Redo">↷</button>
     <button class="chip good" id="b-conf" title="Jump to the next building in trouble">No conflicts</button>
@@ -180,6 +195,15 @@ kbd { font: 800 11px 'Nunito', sans-serif; border: 1px solid var(--line); border
       <div class="row"><button class="btn" id="i-dup">Duplicate</button><button class="btn danger" id="i-del">Delete</button>
         <button class="btn" id="i-reset" title="Put the space back where the map puts it">Put back</button>
         <span id="warn"></span></div>
+    </div>
+    <div class="floating" id="lookpanel" hidden aria-label="District look">
+      <div class="ins-head"><h3>District look</h3><span class="ds" id="lk-note">Changes show on the board as you make them.</span>
+        <button class="btn" id="lk-close">Done</button></div>
+      <div class="tabs" id="lk-tabs"></div>
+      <div class="lk-preview" id="lk-preview"><i class="lk-glow" id="lk-glow"></i><span class="lk-motes" id="lk-motes"></span>
+        <span class="lk-ground"><b id="lk-sw-pave"></b><b id="lk-sw-slab"></b></span></div>
+      <div id="lk-rows" class="lk-rows"></div>
+      <div class="row"><button class="btn" id="lk-reset">Reset this district</button></div>
     </div>
     <div class="floating" id="toast" role="status" aria-live="polite"></div>
   </main>
@@ -232,6 +256,7 @@ kbd { font: 800 11px 'Nunito', sans-serif; border: 1px solid var(--line); border
       <b>Change it</b><span>Variant, HQ, size and exact position are in the panel at the bottom.</span>
       <b>Red</b><span>The piece overlaps another, or stands on a space or the road. Overhead spans are meant to cross the road.</span>
       <b>Spaces</b><span>Drag a space (the coloured hexagons) to move it; its district's road follows. Put back returns it to where the map puts it. What each space is (coin, duel…) is still dealt by the game.</span>
+      <b>Look</b><span>Each district's sky, haze, pavement, slabs, light and particles. Changes show on the board (the sky and particles in the panel's preview).</span>
       <b>Layers</b><span>Hide kinds of pieces (props, overheads…) while you arrange the rest.</span>
       <b>Save</b><span><i>Save for Claude</i> stores the layout where Claude can read it. Your work is also kept on this device between saves.</span>
       <b>Keys</b><span><kbd>⌫</kbd> delete · <kbd>R</kbd> turn 15° · <kbd>D</kbd> duplicate · <kbd>⌘Z</kbd> undo · <kbd>⇧⌘Z</kbd> redo</span>
@@ -384,6 +409,14 @@ async function main() {
         for (let t = 0; t <= len; t += 0.8) roadPts.push({ x: A.x + (B.x - A.x) * t / len, z: A.z + (B.z - A.z) * t / len });
       }
     });
+    // Paving slabs under each district space, as the game lays them.
+    SPACE_IDS.forEach(id => {
+      const d = ORIG.get(id).district; if (!REF.looks || !REF.looks[d] || !REF.looks[d].slab) return;
+      const p = nodePos(id);
+      const slab = new THREE.Mesh(new THREE.PlaneGeometry(16, 13).rotateX(-Math.PI / 2), slabMat(d));
+      slab.rotation.y = -Math.atan2(-p.x, -p.z); slab.position.set(p.x, 0.005, p.z); slab.renderOrder = -1;
+      board.add(slab);
+    });
     // Spaces: a keep-out disc, and a hex marker you can pick up.
     SPACE_IDS.forEach(id => {
       const p = nodePos(id), d = ORIG.get(id).district;
@@ -395,7 +428,7 @@ async function main() {
       mk.position.set(p.x, 0.11, p.z); mk.renderOrder = 7; mk.userData.spaceId = id; board.add(mk);
       spaceMarks.set(id, mk);
     });
-    applySpaceLayer(); paintSpaces(); requestRender();
+    applySpaceLayer(); paintSpaces(); applyLooks();
   }
   function applySpaceLayer() { spaceMarks.forEach(m => { m.visible = !hiddenCats.has('space'); }); }
   function checkSpaces() {
@@ -412,6 +445,54 @@ async function main() {
   function paintSpaces() {
     spaceMarks.forEach((m, id) => { m.material = markerMat(ORIG.get(id).district, id === selSpace ? 'sel' : spaceBad.has(id) ? 'bad' : 'ok'); });
   }
+  // ---------- district looks ----------
+  // REF.looks is each district as the game draws it by default; `looks`
+  // holds only what this layout changes, district by district.
+  let looks = {};
+  const LOOK_NAMES = { fin: 'Financial', ba: 'Back Alley', shop: 'Promenade', ind: 'Industrial', ring: 'Ring Road' };
+  const lookKeys = Object.keys(REF.looks || {}).filter(k => LOOK_NAMES[k]);
+  const effLook = k => {
+    const b = REF.looks[k], o = looks[k] || {};
+    return { ...b, ...Object.fromEntries(['bgTop', 'bgBot', 'fog', 'pave', 'slab', 'seam'].filter(f => o[f]).map(f => [f, o[f]])),
+             light: b.light ? { ...b.light, ...(o.light || {}) } : null, motes: b.motes ? { ...b.motes, ...(o.motes || {}) } : null };
+  };
+  const looksClean = () => {
+    const out = {};
+    for (const k of lookKeys) {
+      const o = looks[k]; if (!o) continue; const b = REF.looks[k], d = {};
+      for (const f of ['bgTop', 'bgBot', 'fog', 'pave', 'slab', 'seam']) if (o[f] && o[f] !== b[f]) d[f] = o[f];
+      for (const g of ['light', 'motes']) if (o[g] && b[g]) {
+        const sub = {}; for (const [f, v] of Object.entries(o[g])) if (v !== b[g][f]) sub[f] = v;
+        if (Object.keys(sub).length) d[g] = sub;
+      }
+      if (Object.keys(d).length) out[k] = d;
+    }
+    return out;
+  };
+  const distLights = new THREE.Group(); scene.add(distLights);
+  function applyLooks() {
+    // Pavement and slab colours on the board.
+    lookKeys.forEach(k => { const e = effLook(k); if (e.pave && paveMats[k]) paveMats[k].color.set(e.pave); if (slabMats[k] && e.slab) slabMats[k].color.set(e.slab); });
+    // District lights, where the game hangs them.
+    while (distLights.children.length) distLights.remove(distLights.children[0]);
+    lookKeys.forEach(k => {
+      const L = effLook(k).light; if (!L || !L.intensity) return;
+      const ids = SPACE_IDS.filter(id => ORIG.get(id).district === k); if (!ids.length) return;
+      const picks = ids.length >= 9 ? [ids[Math.floor(ids.length * 0.28)], ids[Math.floor(ids.length * 0.72)]] : [ids[Math.floor(ids.length / 2)]];
+      picks.forEach(id => {
+        const p = nodePos(id);
+        const lamp = new THREE.PointLight(L.color, L.intensity / picks.length, L.radius || 60, 1.8);
+        lamp.position.set(p.x, L.height || 20, p.z); distLights.add(lamp);
+        if (L.bounce && L.bounceI) {
+          const b = new THREE.PointLight(L.bounce, L.bounceI / picks.length, (L.radius || 60) * 0.55, 2.0);
+          b.position.set(p.x, 2.4, p.z); distLights.add(b);
+        }
+      });
+    });
+    requestRender();
+  }
+  const slabMats = {};
+  const slabMat = d => slabMats[d] || (slabMats[d] = new THREE.MeshBasicMaterial({ color: new THREE.Color((REF.looks[d] && REF.looks[d].slab) || '#555555') }));
   let boardQueued = false;
   function liveBoard() { if (boardQueued) return; boardQueued = true; requestAnimationFrame(() => { boardQueued = false; rebuildBoard(); checkConflicts(); }); }
 
@@ -624,8 +705,8 @@ async function main() {
   }
 
   // ---------- history, draft, dirty ----------
-  function snapshot() { return JSON.stringify({ items: strip(items), spaces: movedClean() }); }
-  function restore(str) { const st = JSON.parse(str); moved = { ...(st.spaces || {}) }; loadItems(st.items || []); }
+  function snapshot() { return JSON.stringify({ items: strip(items), spaces: movedClean(), looks: looksClean() }); }
+  function restore(str) { const st = JSON.parse(str); moved = { ...(st.spaces || {}) }; looks = JSON.parse(JSON.stringify(st.looks || {})); loadItems(st.items || []); renderLook(); }
   function checkpoint() { undoStack.push(snapshot()); if (undoStack.length > 120) undoStack.shift(); redoStack.length = 0; syncButtons(); }
   function loadItems(list, keepSel) {
     items = withUids(list);
@@ -641,7 +722,7 @@ async function main() {
     syncButtons(); updateStatus();
     clearTimeout(draftTimer);
     draftTimer = setTimeout(() => {
-      try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ basedOn: saved.savedAt, items: strip(items), spaces: movedClean(), at: Date.now() })); } catch (e) {}
+      try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ basedOn: saved.savedAt, items: strip(items), spaces: movedClean(), looks: looksClean(), at: Date.now() })); } catch (e) {}
     }, 400);
   }
   function updateStatus(text) {
@@ -930,6 +1011,80 @@ async function main() {
   $('b-fit').onclick = () => { plan.cx = plan.cz = 0; plan.half = 95; orbit.tx = orbit.tz = 0; orbit.dist = 150; updateCams(); };
   $('b-turn').onclick = () => { plan.ang = (plan.ang + Math.PI / 2) % (Math.PI * 2); updateCams(); };
 
+  // ---------- look panel ----------
+  let lookKey = lookKeys[0], lookPending = null;
+  function setLook(k, path, v) {
+    const o = looks[k] || (looks[k] = {});
+    if (path.length === 1) o[path[0]] = v; else { (o[path[0]] || (o[path[0]] = {}))[path[1]] = v; }
+  }
+  function renderLookPreview() {
+    const e = effLook(lookKey);
+    $('lk-preview').style.background = `linear-gradient(to bottom, ${e.bgTop} 0%, ${e.bgBot} 58%, ${e.fog} 100%)`;
+    $('lk-glow').style.background = e.light && e.light.intensity ? e.light.color : 'transparent';
+    $('lk-glow').style.opacity = e.light ? Math.min(0.95, 0.15 + e.light.intensity * 0.3) : 0;
+    const m = e.motes, box = $('lk-motes'); box.innerHTML = '';
+    if (m) for (let i = 0; i < Math.min(60, m.count); i++) {
+      const d = document.createElement('i'), px = 3 + m.size * 14;
+      d.style.cssText = `left:${(seeded(i * 3.1) * 100).toFixed(1)}%;top:${(seeded(i * 7.7) * 80).toFixed(1)}%;width:${px}px;height:${px}px;background:${m.color};opacity:.85`;
+      box.appendChild(d);
+    }
+    $('lk-sw-pave').style.background = e.pave || 'transparent'; $('lk-sw-slab').style.background = e.slab || 'transparent';
+  }
+  function renderLook() {
+    if (!lookKeys.length) return;
+    $('lk-tabs').innerHTML = '';
+    lookKeys.forEach(k => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'tab'; b.textContent = LOOK_NAMES[k];
+      b.setAttribute('aria-pressed', String(k === lookKey));
+      b.onclick = () => { lookKey = k; renderLook(); };
+      $('lk-tabs').appendChild(b);
+    });
+    const e = effLook(lookKey), rows = $('lk-rows'); rows.innerHTML = '';
+    const sec = t => rows.insertAdjacentHTML('beforeend', `<div class="lk-sec">${t}</div>`);
+    const row = (label, colorPath, rangePath, range) => {
+      const r = document.createElement('div'); r.className = 'lk-row';
+      r.append(Object.assign(document.createElement('span'), { textContent: label }));
+      const get = path => path.length === 1 ? e[path[0]] : (e[path[0]] || {})[path[1]];
+      if (colorPath) {
+        const c = document.createElement('input'); c.type = 'color'; c.value = get(colorPath); c.setAttribute('aria-label', label + ' colour');
+        c.oninput = () => { if (!lookPending) lookPending = snapshot(); setLook(lookKey, colorPath, c.value); applyLooks(); renderLookPreview(); };
+        c.onchange = commitLook;
+        r.append(c);
+      } else r.append(document.createElement('span'));
+      if (rangePath) {
+        const [lo, hi, step] = range;
+        const sl = document.createElement('input'); sl.type = 'range'; sl.min = lo; sl.max = hi; sl.step = step; sl.value = get(rangePath);
+        sl.setAttribute('aria-label', label + ' amount');
+        const v = Object.assign(document.createElement('span'), { className: 'v', textContent: (+sl.value).toFixed(step < 1 ? 2 : 0) });
+        sl.oninput = () => { if (!lookPending) lookPending = snapshot(); setLook(lookKey, rangePath, step < 1 ? +(+sl.value).toFixed(3) : Math.round(+sl.value));
+                             v.textContent = (+sl.value).toFixed(step < 1 ? 2 : 0); applyLooks(); renderLookPreview(); };
+        sl.onchange = commitLook;
+        r.append(sl, v);
+      } else r.append(document.createElement('span'), document.createElement('span'));
+      rows.appendChild(r);
+    };
+    sec('Sky'); row('Top', ['bgTop']); row('Bottom', ['bgBot']); row('Haze', ['fog']);
+    if (e.pave || e.slab) { sec('Ground'); if (e.pave) row('Pavement', ['pave']); if (e.slab) row('Slabs', ['slab']); if (e.seam) row('Seams', ['seam']); }
+    if (e.light) { sec('Light'); row('Lamp', ['light', 'color'], ['light', 'intensity'], [0, 4, 0.05]);
+                   if (e.light.bounce) row('Bounce', ['light', 'bounce'], ['light', 'bounceI'], [0, 4, 0.05]); }
+    if (e.motes) { sec('Particles'); row('Colour', ['motes', 'color'], ['motes', 'count'], [0, 120, 1]);
+                   row('Rise', null, ['motes', 'rise'], [-4, 4, 0.05]); row('Size', null, ['motes', 'size'], [0.03, 0.6, 0.01]); }
+    renderLookPreview();
+  }
+  function commitLook() {
+    if (!lookPending) return;
+    undoStack.push(lookPending); if (undoStack.length > 120) undoStack.shift(); redoStack.length = 0; lookPending = null;
+    syncButtons(); changed();
+  }
+  $('lk-reset').onclick = () => { if (!looks[lookKey]) return; checkpoint(); delete looks[lookKey]; applyLooks(); renderLook(); changed(); toast(LOOK_NAMES[lookKey] + ' is back to how the game draws it.'); };
+  const openLook = on => {
+    $('lookpanel').hidden = !on; $('b-look').setAttribute('aria-pressed', String(on));
+    $('tools').style.display = on ? 'none' : '';
+    if (on) { select(null); selectSpace(null); renderLook(); }
+  };
+  $('b-look').onclick = () => openLook($('lookpanel').hidden);
+  $('lk-close').onclick = () => openLook(false);
+
   // ---------- library ----------
   const LIB = [];
   const firstSeed = {};
@@ -1005,7 +1160,7 @@ async function main() {
   function layoutDoc(note) {
     const list = strip(items);
     return { map: MAP, version: 2, savedAt: new Date().toISOString(), note: (note || '').slice(0, 300), itemCount: list.length,
-             items: list, spaces: movedClean(), editor: BUILD_INFO ? BUILD_INFO.commit : '' };
+             items: list, spaces: movedClean(), looks: looksClean(), editor: BUILD_INFO ? BUILD_INFO.commit : '' };
   }
   function openModal(id) { $(id).hidden = false; }
   document.querySelectorAll('.modal').forEach(m => {
@@ -1020,7 +1175,7 @@ async function main() {
     $('m-save-go').disabled = true; updateStatus('Saving…');
     try {
       await db.doc(DOC).set(doc);
-      saved = { savedAt: doc.savedAt, json: JSON.stringify({ items: doc.items, spaces: doc.spaces }) };
+      saved = { savedAt: doc.savedAt, json: JSON.stringify({ items: doc.items, spaces: doc.spaces, looks: doc.looks }) };
       $('m-save').hidden = true;
       toast('Saved. Tell Claude to pull the city layout.');
       try {
@@ -1028,7 +1183,7 @@ async function main() {
         const all = await db.collection(DOC + '/versions').orderBy('savedAt', 'desc').get();
         for (const d of all.docs.slice(30)) await db.doc(DOC + '/versions/' + d.id).delete();
       } catch (e) { /* the main save stands; a missed history entry is not worth an error */ }
-      try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ basedOn: saved.savedAt, items: doc.items, spaces: doc.spaces, at: Date.now() })); } catch (e) {}
+      try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ basedOn: saved.savedAt, items: doc.items, spaces: doc.spaces, looks: doc.looks, at: Date.now() })); } catch (e) {}
     } catch (e) {
       toast(e && e.code === 'invalid_argument' ? 'You can look at this map but not save it. Ask the owner for edit access.' : 'The save didn’t go through. Check your connection and try again.');
     } finally { $('m-save-go').disabled = false; updateStatus(); }
@@ -1037,7 +1192,7 @@ async function main() {
   $('mm-help').onclick = () => { $('m-menu').hidden = true; openModal('m-help'); };
   $('mm-reset').onclick = () => {
     $('m-menu').hidden = true;
-    checkpoint(); moved = { ...(GAME_LAYOUT.spaces || {}) }; loadItems(GAME_LAYOUT.items); changed(); toast('Loaded the layout the game uses now. Undo to go back.');
+    checkpoint(); moved = { ...(GAME_LAYOUT.spaces || {}) }; looks = JSON.parse(JSON.stringify(GAME_LAYOUT.looks || {})); loadItems(GAME_LAYOUT.items); renderLook(); changed(); toast('Loaded the layout the game uses now. Undo to go back.');
   };
   $('mm-export').onclick = async () => {
     const text = JSON.stringify(layoutDoc('Downloaded from the map editor'), null, 1);
@@ -1067,7 +1222,7 @@ async function main() {
         const s = document.createElement('span'); s.textContent = v.note || 'No note';
         txt.append(b, s);
         const open = document.createElement('button'); open.className = 'btn'; open.textContent = 'Open';
-        open.onclick = () => { checkpoint(); moved = { ...(v.spaces || {}) }; loadItems(upgrade(v.items || []).list); changed(); $('m-versions').hidden = true; toast('Opened that version. Undo to go back.'); };
+        open.onclick = () => { checkpoint(); moved = { ...(v.spaces || {}) }; looks = JSON.parse(JSON.stringify(v.looks || {})); renderLook(); loadItems(upgrade(v.items || []).list); changed(); $('m-versions').hidden = true; toast('Opened that version. Undo to go back.'); };
         row.append(txt, open); list.appendChild(row);
       });
     } catch (e) { list.innerHTML = '<p>Couldn’t load the saved versions. Try again in a moment.</p>'; }
@@ -1083,8 +1238,9 @@ async function main() {
     try { const snap = await db.doc(DOC).get(); if (snap.exists) base = snap.data(); }
     catch (e) { toast('Couldn’t read the saved layout; showing the game’s.'); }
   }
-  saved = { savedAt: base === GAME_LAYOUT ? null : base.savedAt, json: JSON.stringify({ items: strip(base.items || []), spaces: base.spaces || {} }) };
+  saved = { savedAt: base === GAME_LAYOUT ? null : base.savedAt, json: JSON.stringify({ items: strip(base.items || []), spaces: base.spaces || {}, looks: base.looks || {} }) };
   moved = { ...(base.spaces || {}) };
+  looks = JSON.parse(JSON.stringify(base.looks || {}));
   // A layout saved before the street pieces were editable holds only the
   // buildings; the street pieces come from the game's layout so saving it
   // can never drop them.
@@ -1096,8 +1252,8 @@ async function main() {
   let start = base.items || [];
   try {
     const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null');
-    if (d && Array.isArray(d.items) && d.basedOn === saved.savedAt && JSON.stringify({ items: d.items, spaces: d.spaces || {} }) !== saved.json) {
-      start = d.items; moved = { ...(d.spaces || {}) }; setTimeout(() => toast('Restored your unsaved changes from last time.'), 400);
+    if (d && Array.isArray(d.items) && d.basedOn === saved.savedAt && JSON.stringify({ items: d.items, spaces: d.spaces || {}, looks: d.looks || {} }) !== saved.json) {
+      start = d.items; moved = { ...(d.spaces || {}) }; looks = JSON.parse(JSON.stringify(d.looks || {})); setTimeout(() => toast('Restored your unsaved changes from last time.'), 400);
     }
   } catch (e) {}
   const up = upgrade(start);
